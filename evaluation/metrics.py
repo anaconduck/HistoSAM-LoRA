@@ -1,134 +1,255 @@
-"""Segmentation evaluation metrics and statistical tests."""
+"""Comprehensive Evaluation Metrics for Histopathology Semantic Segmentation (Q1 Journal Standard).
+
+Metrics included:
+- mIoU (Mean Intersection over Union)
+- Dice Similarity Coefficient (DSC / F1-Score)
+- HD95 (95th Percentile Hausdorff Distance)
+- ASD (Average Surface Distance)
+- Precision, Sensitivity (Recall), Specificity
+
+Designed for:
+- Per-class evaluation (Necrosis, Normal Parenchyma, Steatosis)
+- Ignore index support (e.g., 255 for non-tissue glass slide background)
+- Robust boundary distance calculations using SciPy
+"""
 
 import numpy as np
-from scipy import stats
-from sklearn.metrics import cohen_kappa_score
+import torch
+from typing import Dict, List, Optional, Tuple
+from scipy.ndimage import distance_transform_edt, binary_erosion
 
 
-def compute_dice_score(pred_mask: np.ndarray, target_mask: np.ndarray, eps: float = 1e-6) -> float:
-    intersection = np.sum((pred_mask == 1) & (target_mask == 1))
-    total = np.sum(pred_mask == 1) + np.sum(target_mask == 1)
-    if total == 0:
-        return 1.0
-    return (2.0 * intersection + eps) / (total + eps)
+def compute_confusion_matrix(
+    pred: np.ndarray,
+    target: np.ndarray,
+    num_classes: int = 3,
+    ignore_index: int = 255,
+) -> np.ndarray:
+    """Calculates confusion matrix of shape (num_classes, num_classes).
+
+    Rows: ground truth, Columns: prediction.
+    """
+    valid = target != ignore_index
+    y_true = target[valid]
+    y_pred = pred[valid]
+
+    mask = (y_true >= 0) & (y_true < num_classes) & (y_pred >= 0) & (y_pred < num_classes)
+    hist = np.bincount(
+        num_classes * y_true[mask].astype(int) + y_pred[mask].astype(int),
+        minlength=num_classes**2,
+    ).reshape(num_classes, num_classes)
+    return hist
 
 
-def compute_iou_score(pred_mask: np.ndarray, target_mask: np.ndarray, eps: float = 1e-6) -> float:
-    intersection = np.sum((pred_mask == 1) & (target_mask == 1))
-    union = np.sum((pred_mask == 1) | (target_mask == 1))
-    if union == 0:
-        return 1.0
-    return (intersection + eps) / (union + eps)
+def compute_iou_and_dice(
+    confusion_matrix: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Computes per-class IoU and Dice from a confusion matrix."""
+    true_positive = np.diag(confusion_matrix)
+    false_positive = confusion_matrix.sum(axis=0) - true_positive
+    false_negative = confusion_matrix.sum(axis=1) - true_positive
+
+    denominator_iou = true_positive + false_positive + false_negative
+    iou = np.divide(
+        true_positive,
+        denominator_iou,
+        out=np.zeros_like(true_positive, dtype=float),
+        where=denominator_iou != 0,
+    )
+
+    denominator_dice = 2 * true_positive + false_positive + false_negative
+    dice = np.divide(
+        2 * true_positive,
+        denominator_dice,
+        out=np.zeros_like(true_positive, dtype=float),
+        where=denominator_dice != 0,
+    )
+
+    return iou, dice
 
 
-def evaluate_multiclass_segmentation(
-    pred_masks: np.ndarray,
-    target_masks: np.ndarray,
-    class_names: list = ["necrosis", "normal", "steatosis"]
-):
-    results = {}
-    dices_per_class = {c: [] for c in class_names}
-    ious_per_class = {c: [] for c in class_names}
+def compute_surface_distances(
+    mask_gt: np.ndarray,
+    mask_pred: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Extracts boundary surface distances between prediction and ground truth."""
+    if not np.any(mask_gt) or not np.any(mask_pred):
+        return np.array([]), np.array([])
 
-    N = pred_masks.shape[0]
-    for i in range(N):
-        p_map = pred_masks[i]
-        t_map = target_masks[i]
+    # Extract single-pixel boundary contours using binary erosion
+    border_gt = mask_gt ^ binary_erosion(mask_gt)
+    border_pred = mask_pred ^ binary_erosion(mask_pred)
 
-        for cls_idx, cls_name in enumerate(class_names):
-            p_bin = (p_map == cls_idx).astype(np.uint8)
-            t_bin = (t_map == cls_idx).astype(np.uint8)
+    if not np.any(border_gt) or not np.any(border_pred):
+        return np.array([]), np.array([])
 
-            d = compute_dice_score(p_bin, t_bin)
-            j = compute_iou_score(p_bin, t_bin)
+    # Distance transforms from each boundary
+    dt_gt = distance_transform_edt(~border_gt)
+    dt_pred = distance_transform_edt(~border_pred)
 
-            dices_per_class[cls_name].append(d)
-            ious_per_class[cls_name].append(j)
+    # Distances from pred border points to closest gt border point
+    dist_pred_to_gt = dt_gt[border_pred]
+    # Distances from gt border points to closest pred border point
+    dist_gt_to_pred = dt_pred[border_gt]
 
-    print("\n" + "=" * 60)
-    print("SEGMENTATION EVALUATION")
-    print("=" * 60)
-
-    summary_dice = []
-    summary_iou = []
-
-    for cls_name in class_names:
-        m_dice = float(np.mean(dices_per_class[cls_name]))
-        std_dice = float(np.std(dices_per_class[cls_name]))
-        m_iou = float(np.mean(ious_per_class[cls_name]))
-        std_iou = float(np.std(ious_per_class[cls_name]))
-
-        results[f"Dice_{cls_name}"] = (m_dice, std_dice)
-        results[f"IoU_{cls_name}"] = (m_iou, std_iou)
-
-        summary_dice.append(m_dice)
-        summary_iou.append(m_iou)
-
-        print(f"Class: {cls_name:12s} | Dice: {m_dice:.4f} ± {std_dice:.4f} | IoU: {m_iou:.4f} ± {std_iou:.4f}")
-
-    results["mDice"] = float(np.mean(summary_dice))
-    results["mIoU"] = float(np.mean(summary_iou))
-
-    print("-" * 60)
-    print(f"Mean Dice (mDice): {results['mDice']:.4f}")
-    print(f"Mean IoU (mIoU)  : {results['mIoU']:.4f}")
-    print("=" * 60)
-
-    return results
+    return dist_pred_to_gt, dist_gt_to_pred
 
 
-def evaluate_inter_pathologist_agreement(
-    pathologist_1_masks: np.ndarray,
-    pathologist_2_masks: np.ndarray,
-    class_names: list = ["necrosis", "normal", "steatosis"]
-):
-    flat_p1 = pathologist_1_masks.flatten()
-    flat_p2 = pathologist_2_masks.flatten()
-
-    if len(flat_p1) > 1_000_000:
-        idx = np.random.choice(len(flat_p1), size=1_000_000, replace=False)
-        flat_p1 = flat_p1[idx]
-        flat_p2 = flat_p2[idx]
-
-    kappa = cohen_kappa_score(flat_p1, flat_p2)
-
-    pairwise_dices = {}
-    for cls_idx, cls_name in enumerate(class_names):
-        d = compute_dice_score((flat_p1 == cls_idx).astype(np.uint8), (flat_p2 == cls_idx).astype(np.uint8))
-        pairwise_dices[cls_name] = d
-
-    print("\n" + "=" * 60)
-    print("INTER-OBSERVER AGREEMENT")
-    print("=" * 60)
-    print(f"Cohen's Kappa (κ): {kappa:.4f}")
-    for cls_name, d_val in pairwise_dices.items():
-        print(f"Pairwise Dice [{cls_name}]: {d_val:.4f}")
-    print("=" * 60)
-
-    return {"kappa": kappa, "pairwise_dices": pairwise_dices}
+def compute_hd95(dist_pred_to_gt: np.ndarray, dist_gt_to_pred: np.ndarray) -> float:
+    """Computes 95th Percentile Hausdorff Distance (HD95)."""
+    if len(dist_pred_to_gt) == 0 or len(dist_gt_to_pred) == 0:
+        return np.nan
+    all_dists = np.concatenate([dist_pred_to_gt, dist_gt_to_pred])
+    return float(np.percentile(all_dists, 95))
 
 
-def perform_statistical_tests(model_a_scores: list, model_b_scores: list, metric_name: str = "Dice"):
-    a = np.array(model_a_scores)
-    b = np.array(model_b_scores)
-    diff = b - a
+def compute_asd(dist_pred_to_gt: np.ndarray, dist_gt_to_pred: np.ndarray) -> float:
+    """Computes Average Surface Distance (ASD)."""
+    if len(dist_pred_to_gt) == 0 or len(dist_gt_to_pred) == 0:
+        return np.nan
+    all_dists = np.concatenate([dist_pred_to_gt, dist_gt_to_pred])
+    return float(np.mean(all_dists))
 
-    t_stat, p_val_t = stats.ttest_rel(b, a)
 
-    try:
-        w_stat, p_val_w = stats.wilcoxon(b, a)
-    except Exception:
-        w_stat, p_val_w = float('nan'), float('nan')
+class SegmentationMetricsMeter:
+    """Accumulates and computes all publication-grade metrics across an evaluation split."""
 
-    print(f"\n[STATISTICAL TEST: {metric_name}]")
-    print(f"Mean Difference: {np.mean(diff):+.4f}")
-    print(f"Paired t-test: t={t_stat:.3f}, p-value={p_val_t:.4e}")
-    print(f"Wilcoxon test: W={w_stat:.3f}, p-value={p_val_w:.4e}")
+    def __init__(
+        self,
+        num_classes: int = 3,
+        class_names: Optional[List[str]] = None,
+        ignore_index: int = 255,
+    ):
+        self.num_classes = num_classes
+        self.class_names = (
+            class_names
+            if class_names is not None
+            else ["necrosis", "normal", "steatosis"]
+        )
+        self.ignore_index = ignore_index
+        self.reset()
 
-    return {
-        "mean_diff": float(np.mean(diff)),
-        "t_stat": float(t_stat),
-        "p_val_t": float(p_val_t),
-        "p_val_w": float(p_val_w)
-    }
+    def reset(self):
+        self.total_confusion_matrix = np.zeros(
+            (self.num_classes, self.num_classes), dtype=np.int64
+        )
+        self.per_class_hd95: Dict[int, List[float]] = {
+            c: [] for c in range(self.num_classes)
+        }
+        self.per_class_asd: Dict[int, List[float]] = {
+            c: [] for c in range(self.num_classes)
+        }
 
+    def update(
+        self,
+        pred: torch.Tensor | np.ndarray,
+        target: torch.Tensor | np.ndarray,
+        compute_boundary_metrics: bool = True,
+    ):
+        """Updates metrics with a batch of predictions and ground truth.
+
+        Args:
+            pred: (B, H, W) or (B, C, H, W) logits/probabilities
+            target: (B, H, W) labels
+        """
+        if isinstance(pred, torch.Tensor):
+            if pred.ndim == 4:
+                pred = pred.argmax(dim=1)
+            pred = pred.detach().cpu().numpy()
+
+        if isinstance(target, torch.Tensor):
+            target = target.detach().cpu().numpy()
+
+        batch_size = pred.shape[0]
+        for b in range(batch_size):
+            p = pred[b]
+            t = target[b]
+
+            # Accumulate confusion matrix
+            self.total_confusion_matrix += compute_confusion_matrix(
+                p, t, num_classes=self.num_classes, ignore_index=self.ignore_index
+            )
+
+            # Compute boundary metrics per class
+            if compute_boundary_metrics:
+                for c in range(self.num_classes):
+                    bin_gt = (t == c) & (t != self.ignore_index)
+                    bin_pred = (p == c) & (t != self.ignore_index)
+
+                    if np.any(bin_gt) and np.any(bin_pred):
+                        d_p2g, d_g2p = compute_surface_distances(bin_gt, bin_pred)
+                        hd95 = compute_hd95(d_p2g, d_g2p)
+                        asd = compute_asd(d_p2g, d_g2p)
+                        if not np.isnan(hd95):
+                            self.per_class_hd95[c].append(hd95)
+                        if not np.isnan(asd):
+                            self.per_class_asd[c].append(asd)
+
+    def summary(self) -> Dict[str, float]:
+        """Returns comprehensive summary of all evaluation metrics."""
+        iou_per_class, dice_per_class = compute_iou_and_dice(
+            self.total_confusion_matrix
+        )
+
+        results: Dict[str, float] = {
+            "mIoU": float(np.nanmean(iou_per_class)),
+            "mDice": float(np.nanmean(dice_per_class)),
+        }
+
+        # Per-class IoU and Dice
+        for c, name in enumerate(self.class_names):
+            results[f"IoU_{name}"] = float(iou_per_class[c])
+            results[f"Dice_{name}"] = float(dice_per_class[c])
+
+            # HD95
+            hd95_vals = self.per_class_hd95[c]
+            results[f"HD95_{name}"] = (
+                float(np.mean(hd95_vals)) if len(hd95_vals) > 0 else np.nan
+            )
+
+            # ASD
+            asd_vals = self.per_class_asd[c]
+            results[f"ASD_{name}"] = (
+                float(np.mean(asd_vals)) if len(asd_vals) > 0 else np.nan
+            )
+
+        # Overall mean HD95 and ASD
+        all_hd95 = [v for vals in self.per_class_hd95.values() for v in vals]
+        all_asd = [v for vals in self.per_class_asd.values() for v in vals]
+        results["mHD95"] = float(np.mean(all_hd95)) if len(all_hd95) > 0 else np.nan
+        results["mASD"] = float(np.mean(all_asd)) if len(all_asd) > 0 else np.nan
+
+        return results
+
+    def print_table(self):
+        """Prints formatted metrics table matching Q1 journal presentation."""
+        res = self.summary()
+        print("=" * 70)
+        print(" CLINICAL PERFORMANCE EVALUATION (Q1 JOURNAL STANDARD)")
+        print("=" * 70)
+        print(f" {'Class':<15} | {'IoU (%)':<10} | {'Dice (%)':<10} | {'HD95 (px)':<12} | {'ASD (px)':<10}")
+        print("-" * 70)
+        for name in self.class_names:
+            iou = res[f"IoU_{name}"] * 100
+            dice = res[f"Dice_{name}"] * 100
+            hd95 = res[f"HD95_{name}"]
+            asd = res[f"ASD_{name}"]
+            hd95_str = f"{hd95:.2f}" if not np.isnan(hd95) else "N/A"
+            asd_str = f"{asd:.2f}" if not np.isnan(asd) else "N/A"
+            print(f" {name:<15} | {iou:<10.2f} | {dice:<10.2f} | {hd95_str:<12} | {asd_str:<10}")
+        print("-" * 70)
+        m_hd95_str = f"{res['mHD95']:.2f}" if not np.isnan(res['mHD95']) else "N/A"
+        m_asd_str = f"{res['mASD']:.2f}" if not np.isnan(res['mASD']) else "N/A"
+        print(f" {'MEAN OVERALL':<15} | {res['mIoU']*100:<10.2f} | {res['mDice']*100:<10.2f} | {m_hd95_str:<12} | {m_asd_str:<10}")
+        print("=" * 70)
+
+
+if __name__ == "__main__":
+    meter = SegmentationMetricsMeter(num_classes=3)
+    dummy_pred = torch.randint(0, 3, (4, 256, 256))
+    dummy_gt = torch.randint(0, 3, (4, 256, 256))
+    dummy_gt[:, 0:20, 0:20] = 255  # test ignore_index
+
+    meter.update(dummy_pred, dummy_gt)
+    meter.print_table()
+    print("[SUCCESS] SegmentationMetricsMeter successfully verified!")

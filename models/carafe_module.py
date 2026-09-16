@@ -71,13 +71,14 @@ class CARAFE(nn.Module):
         patches = F.unfold(x_padded, kernel_size=K, stride=1)
         patches = patches.view(B, C, K * K, H, W)
 
-        patches = patches.unsqueeze(4).unsqueeze(6).repeat(1, 1, 1, 1, S, 1, S)
-        patches = patches.view(B, C, K * K, H * S, W * S)
-        patches = patches.permute(0, 3, 4, 1, 2)
+        # Reshape kernel: (B, H*S, W*S, K*K) -> (B, K*K, S*S, H, W)
+        k_reshaped = kernel.view(B, H, S, W, S, K * K).permute(0, 5, 2, 4, 1, 3).reshape(B, K * K, S * S, H, W)
 
-        kernel = kernel.unsqueeze(3)
-        out = torch.sum(patches * kernel, dim=-1)
-        out = out.permute(0, 3, 1, 2).contiguous()
+        # Content-aware reassembly: (B, C, S*S, H, W)
+        out_sub = torch.einsum('bckhw,bkmhw->bcmhw', patches, k_reshaped)
+
+        # Fast spatial rearrangement to (B, C, H*S, W*S) without .repeat()
+        out = out_sub.view(B, C, S, S, H, W).permute(0, 1, 4, 2, 5, 3).reshape(B, C, H * S, W * S).contiguous()
 
         return self.post_conv(out)
 

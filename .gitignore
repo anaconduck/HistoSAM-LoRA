@@ -1,12 +1,45 @@
-# Byte-compiled / optimized / DLL files
+# ==============================================================================
+# Git Ignore Configuration for Liver Histopathology Research (HistoSAM-LoRA)
+# Enforces: Security, Data Confidentiality, and GitHub File Size Limits (<100MB)
+# ==============================================================================
+
+# --- Confidential Medical / Primary Data (Do NOT Leak to GitHub) ---
+# Raw tissue TIFF slides, patient data, and processed tiles
+data/liver_primary/
+data/public_pretrain/
+data/splits/
+*.tif
+*.tiff
+*.svs
+*.ndpi
+*.mrxs
+*.npy
+*.npz
+
+# --- Large Model Weights & Checkpoints (Exceeds GitHub 100MB Limit) ---
+# Official MedSAM backbone (~375MB) and trained fold checkpoints
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.engine
+*.tflite
+*.ckpt
+*.part
+models/MedSAM/medsam_vit_b.pth
+
+# --- Generated Experiment Results, Outputs & Visualizations ---
+results/
+runs/
+wandb/
+*.log
+
+# --- Python Environment & Bytecode ---
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -20,13 +53,12 @@ parts/
 sdist/
 var/
 wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# Virtual Environments
+# --- Virtual Environments ---
 venv/
 .venv/
 env/
@@ -34,51 +66,20 @@ ENV/
 env.bak/
 venv.bak/
 
-# Deep Learning weights & checkpoints
-*.pt
-*.pth
-*.pwf
-*.onnx
-*.engine
-*.tflite
-*.ckpt
+# --- Environment Variables, Keys, and Secrets ---
+.env
+.env.*
+*.secret
+credentials.json
 
-# Training runs & logs
-runs/
-results/
-wandb/
-*.log
-
-# Histopathology Large Datasets (Keep folder structure, ignore large binaries)
-data/pannuke/*.zip
-data/pannuke/*.tar.gz
-data/pannuke/*.npy
-data/pannuke/zips/
-data/pannuke/raw/
-data/pannuke/yolo_format/
-data/liver_primary/raw_images/*
-!data/liver_primary/raw_images/README.txt
-data/liver_primary/raw_annotations/*
-!data/liver_primary/raw_annotations/README.txt
-data/liver_primary/processed/
-data/kfold_splits/
-
-# IDE & Editor settings
+# --- IDE & System Files ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS generated files
 .DS_Store
 .DS_Store?
 ._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
-
-# AI Agent & Workspace configurations
-.agents/
-
+ehthumbs.db

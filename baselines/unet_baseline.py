@@ -1,22 +1,34 @@
-"""U-Net baseline for multi-class tissue segmentation."""
+"""U-Net baseline for multi-class tissue segmentation (Q1 Benchmark Comparator).
+
+Allows fair benchmark comparison against HistoSAM-LoRA using the exact same:
+- Patient-Level Stratified K-Fold splits (split_rX_fY.json)
+- Multi-class evaluation metrics (mIoU, mDice, HD95, ASD)
+- Zero-augmentation protocol
+"""
 
 import sys
+import json
 import argparse
 from pathlib import Path
+from typing import Dict, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-import cv2
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from data.dataset import build_dataloaders_from_split
+from evaluation.metrics import SegmentationMetricsMeter
+
 
 class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
@@ -24,15 +36,17 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.double_conv(x)
 
 
 class UNet(nn.Module):
-    def __init__(self, n_channels=3, n_classes=3):
+    """Standard U-Net architecture (Ronneberger et al., MICCAI 2015)."""
+
+    def __init__(self, n_channels: int = 3, n_classes: int = 3):
         super().__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
@@ -57,7 +71,7 @@ class UNet(nn.Module):
 
         self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -80,68 +94,44 @@ class UNet(nn.Module):
         return logits
 
 
-class HistologyPatchDataset(Dataset):
-    def __init__(self, img_dir: Path, lbl_dir: Path, img_size: int = 512):
-        self.img_files = sorted(list(img_dir.glob("*.png")) + list(img_dir.glob("*.jpg")))
-        self.lbl_dir = lbl_dir
-        self.img_size = img_size
-
-    def __len__(self):
-        return len(self.img_files)
-
-    def __getitem__(self, idx):
-        img_path = self.img_files[idx]
-        img = cv2.imread(str(img_path))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (self.img_size, self.img_size))
-
-        lbl_path = self.lbl_dir / f"{img_path.stem}.txt"
-        mask = np.zeros((self.img_size, self.img_size), dtype=np.int64)
-
-        if lbl_path.exists():
-            with open(lbl_path, 'r') as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) >= 7:
-                        cls_id = int(parts[0])
-                        pts = np.array([float(x) for x in parts[1:]]).reshape(-1, 2)
-                        pts[:, 0] *= self.img_size
-                        pts[:, 1] *= self.img_size
-                        cv2.fillPoly(mask, [pts.astype(np.int32)], cls_id)
-
-        img_tensor = torch.from_numpy(img.transpose(2, 0, 1)).float() / 255.0
-        mask_tensor = torch.from_numpy(mask).long()
-
-        return img_tensor, mask_tensor
-
-
 def train_unet_baseline(
+    split_file: str,
     data_dir: str = "data/liver_primary/processed",
-    epochs: int = 60,
+    output_dir: str = "results/checkpoints",
+    epochs: int = 40,
     batch_size: int = 8,
     lr: float = 1e-4,
-    device: str = "0"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
-    dev = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Training U-Net on {dev}")
+    dev = torch.device(device)
+    print(f"[INFO] Training U-Net baseline on {dev}...")
 
-    dataset_path = Path(data_dir)
-    train_dataset = HistologyPatchDataset(dataset_path / "images", dataset_path / "labels")
-    if len(train_dataset) == 0:
-        print("[WARN] No processed patches found in dataset directory.")
-        return
+    train_loader, val_loader = build_dataloaders_from_split(
+        split_file=split_file,
+        data_dir=data_dir,
+        batch_size=batch_size,
+        num_workers=2 if dev.type == "cuda" else 0,
+        img_size=512,
+    )
 
-    loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     model = UNet(n_channels=3, n_classes=3).to(dev)
+    criterion = nn.CrossEntropyLoss(ignore_index=255)
+    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    split_stem = Path(split_file).stem
+
+    best_dice = 0.0
 
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
-        for imgs, masks in loader:
-            imgs, masks = imgs.to(dev), masks.to(dev)
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}", leave=False):
+            imgs = batch["image"].to(dev)
+            masks = batch["mask"].to(dev)
+
             optimizer.zero_grad()
             logits = model(imgs)
             loss = criterion(logits, masks)
@@ -149,22 +139,49 @@ def train_unet_baseline(
             optimizer.step()
             total_loss += loss.item()
 
-        if epoch % 10 == 0 or epoch == epochs:
-            avg_loss = total_loss / max(len(loader), 1)
-            print(f"Epoch [{epoch}/{epochs}] - Loss: {avg_loss:.4f}")
+        scheduler.step()
 
-    out_weights = PROJECT_ROOT / "results" / "checkpoints" / "unet_baseline.pth"
-    out_weights.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), str(out_weights))
-    print(f"[INFO] Weights saved to {out_weights}")
+        # Validation
+        model.eval()
+        meter = SegmentationMetricsMeter(num_classes=3)
+        with torch.no_grad():
+            for batch in val_loader:
+                imgs = batch["image"].to(dev)
+                masks = batch["mask"].to(dev)
+                logits = model(imgs)
+                meter.update(logits, masks, compute_boundary_metrics=(epoch == epochs))
+
+        metrics = meter.summary()
+        avg_loss = total_loss / max(len(train_loader), 1)
+        print(
+            f"Epoch [{epoch:02d}/{epochs:02d}] - Train Loss: {avg_loss:.4f} | "
+            f"mIoU: {metrics['mIoU']*100:.2f}% | mDice: {metrics['mDice']*100:.2f}%"
+        )
+
+        if metrics["mDice"] > best_dice:
+            best_dice = metrics["mDice"]
+            save_file = out_path / f"unet_baseline_{split_stem}_best.pth"
+            torch.save(model.state_dict(), str(save_file))
+            print(f"  --> Saved best U-Net model ({best_dice*100:.2f}%) to {save_file.name}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train U-Net baseline")
-    parser.add_argument("--epochs", type=int, default=60)
-    parser.add_argument("--batch", type=int, default=8)
-    parser.add_argument("--device", type=str, default="0")
+    parser = argparse.ArgumentParser(description="Train U-Net baseline on histopathology")
+    parser.add_argument("--split_file", type=str, required=True, help="Path to split JSON file")
+    parser.add_argument("--data_dir", type=str, default="data/liver_primary/processed")
+    parser.add_argument("--output_dir", type=str, default="results/checkpoints")
+    parser.add_argument("--epochs", type=int, default=40)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+
     args = parser.parse_args()
-
-    train_unet_baseline(epochs=args.epochs, batch_size=args.batch, device=args.device)
-
+    train_unet_baseline(
+        split_file=args.split_file,
+        data_dir=args.data_dir,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        device=args.device,
+    )

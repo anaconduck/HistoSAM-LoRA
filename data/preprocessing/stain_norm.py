@@ -1,7 +1,6 @@
 """Macenko stain normalization (Macenko et al., ISBI 2009)."""
 
 import numpy as np
-import cv2
 
 
 class MacenkoNormalizer:
