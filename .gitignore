@@ -3,11 +3,12 @@
 # Enforces: Security, Data Confidentiality, and GitHub File Size Limits (<100MB)
 # ==============================================================================
 
-# --- Confidential Medical / Primary Data (Do NOT Leak to GitHub) ---
+# --- Confidential Medical / Primary Data & Internal Docs (Do NOT Leak to GitHub) ---
 # Raw tissue TIFF slides, patient data, and processed tiles
 data/liver_primary/
 data/public_pretrain/
 data/splits/
+docs/
 *.tif
 *.tiff
 *.svs
