@@ -96,7 +96,7 @@ python inference.py --image_path data/liver_primary/processed/images/sample.png
 
 ## 📊 Tabel Hasil Eksperimen
 
-> **Catatan**: Semua hasil dilaporkan dalam format **Mean ± Std** dari 5-Fold Patient-Level Stratified Cross-Validation (3× Repeat = 15 total fold). Metrik dihitung menggunakan [`evaluation/metrics.py`](file:///c:/Freelance/Histopatologi/evaluation/metrics.py) yang mengimplementasikan `SegmentationMetricsMeter` dengan HD95 dan ASD berbasis `scipy.ndimage.distance_transform_edt`. Uji signifikansi statistik: *Wilcoxon Signed-Rank Test* (α = 0.05).
+> **Catatan**: Semua hasil dilaporkan dalam format **Mean ± Std** dari 5-Fold Patient-Level Stratified Cross-Validation (3× Repeat = 15 total fold). Metrik dihitung menggunakan [`evaluation/metrics.py`](file:///c:/Freelance/Histopatologi/evaluation/metrics.py) yang mengimplementasikan `SegmentationMetricsMeter` dengan HD95 dan ASD berbasis `scipy.ndimage.distance_transform_edt`.
 
 ---
 
@@ -205,35 +205,7 @@ python inference.py --image_path data/liver_primary/processed/images/sample.png
 
 ---
 
-### Tabel 9. Inter-Observer Agreement — Validasi Klinis 2 Patolog
-
-| Metrik | Necrosis | Normal Parenchyma | Steatosis | Overall |
-|---|:---:|:---:|:---:|:---:|
-| Cohen's Kappa (κ) | 0.82 ± 0.04 | 0.91 ± 0.02 | 0.87 ± 0.03 | 0.87 ± 0.03 |
-| Inter-Observer Dice (%) | 84.56 ± 3.21 | 93.24 ± 1.45 | 89.47 ± 2.68 | 89.09 ± 2.12 |
-| Model vs. Consensus Dice (%) | 83.41 ± 2.85 | 91.72 ± 1.42 | 87.76 ± 2.54 | 87.63 ± 1.98 |
-
-> **Analisis**: Model HistoSAM-LoRA mencapai Dice **87.63%** dibandingkan konsensus, mendekati batas *inter-observer agreement* manusia (**89.09%**). Gap terkecil pada kelas **Normal Parenchyma** (−1.52%) dan terbesar pada **Steatosis** (−1.71%), konsisten dengan variabilitas delineasi vakuola lipid di antara patolog.
-
----
-
-### Tabel 10. Uji Signifikansi Statistik — HistoSAM-LoRA vs. Baseline
-
-| Comparison Pair | Metric | HistoSAM-LoRA | Comparator | *p*-value (Wilcoxon) | Signifikan? |
-|---|:---:|:---:|:---:|:---:|:---:|
-| vs. U-Net | mDice | 87.63 ± 1.98 | 73.85 ± 3.67 | *p* < 0.001 | ✓ Yes |
-| vs. U-Net | mIoU | 78.52 ± 2.41 | 62.38 ± 4.21 | *p* < 0.001 | ✓ Yes |
-| vs. MedSAM (Full FT) | mDice | 87.63 ± 1.98 | 81.67 ± 2.94 | *p* = 0.002 | ✓ Yes |
-| vs. MedSAM (Full FT) | mIoU | 78.52 ± 2.41 | 71.24 ± 3.58 | *p* = 0.003 | ✓ Yes |
-| vs. SAMed (LoRA, r=4) | mDice | 87.63 ± 1.98 | 83.42 ± 2.68 | *p* = 0.008 | ✓ Yes |
-| vs. SAMed (LoRA, r=4) | mIoU | 78.52 ± 2.41 | 73.16 ± 3.12 | *p* = 0.011 | ✓ Yes |
-| vs. SAMed (LoRA, r=4) | mHD95 | 7.84 ± 1.63 | 11.05 ± 2.31 | *p* = 0.006 | ✓ Yes |
-
-> **Analisis**: Seluruh perbaikan performa HistoSAM-LoRA terhadap semua baseline signifikan secara statistik (*p* < 0.05, Wilcoxon Signed-Rank Test). Hal ini memperkuat klaim bahwa peningkatan bukan hanya artefak stokastik tetapi merupakan perbaikan sistematik dari arsitektur yang diusulkan.
-
----
-
-### Tabel 11. Efisiensi Komputasi & Memori (NVIDIA RTX 5070, 12GB VRAM)
+### Tabel 9. Efisiensi Komputasi & Memori (NVIDIA RTX 5070, 12GB VRAM)
 
 | Model | Total Params (M) | Trainable (M) | Trainable (%) | VRAM (GB) | Inference (ms/patch) | Weight Size (MB) |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -246,7 +218,7 @@ python inference.py --image_path data/liver_primary/processed/images/sample.png
 
 ---
 
-### Tabel 12. Perbandingan Loss Function (5-Fold CV)
+### Tabel 10. Perbandingan Loss Function (5-Fold CV)
 
 | Loss Function | mIoU (%) | mDice (%) | mHD95 (px) | Cocok untuk Batas Amorfus? |
 |---|:---:|:---:|:---:|:---:|
@@ -268,9 +240,8 @@ python inference.py --image_path data/liver_primary/processed/images/sample.png
 | 3 | LoRA rank 8 optimal; rank lebih tinggi menyebabkan overfitting | Tabel 6 |
 | 4 | Two-stage transfer learning meningkatkan **+3.07% mDice** vs MedSAM saja | Tabel 7 |
 | 5 | Self-training konvergen pada 3 iterasi dengan **+2.36% mDice** | Tabel 8 |
-| 6 | Performa model mendekati batas *inter-observer* manusia (87.63% vs 89.09%) | Tabel 9 |
-| 7 | Semua perbaikan signifikan secara statistik (*p* < 0.05) | Tabel 10 |
-| 8 | Hanya 5.5 MB bobot tersimpan, **65× lebih ringan** dari full fine-tune | Tabel 11 |
+| 6 | Hanya 5.5 MB bobot tersimpan, **65× lebih ringan** dari full fine-tune | Tabel 9 |
+| 7 | Boundary Laplacian Loss menghasilkan HD95 terendah (**7.84 px**) untuk batas amorfus | Tabel 10 |
 
 ---
 
