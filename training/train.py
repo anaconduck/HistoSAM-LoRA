@@ -138,6 +138,10 @@ def run_training(
     weight_decay: float = 1e-2,
     lora_r: int = 8,
     lora_alpha: float = 16.0,
+    decoder_type: str = "carafe",
+    lambda_focal: float = 1.0,
+    lambda_dice: float = 1.0,
+    lambda_boundary: float = 0.2,
     seed: int = 42,
     use_amp: bool = True,
 ):
@@ -161,12 +165,13 @@ def run_training(
     )
 
     # 2. Build HistoSAM-LoRA model
-    print("[INFO] Initializing HistoSAM-LoRA...")
+    print(f"[INFO] Initializing HistoSAM (r={lora_r}, decoder={decoder_type})...")
     model = HistoSAM_LoRA(
         checkpoint_path=checkpoint_path,
         num_classes=3,
         r=lora_r,
         lora_alpha=lora_alpha,
+        decoder_type=decoder_type,
     )
     model.to(device)
     model.print_parameter_summary()
@@ -181,9 +186,9 @@ def run_training(
     # 4. Setup Loss Function
     criterion = BoundaryAwareJointLoss(
         gamma=2.0,
-        lambda_focal=1.0,
-        lambda_dice=1.0,
-        lambda_boundary=0.2,
+        lambda_focal=lambda_focal,
+        lambda_dice=lambda_dice,
+        lambda_boundary=lambda_boundary,
         ignore_index=255,
     ).to(device)
 
@@ -262,6 +267,12 @@ def run_pretraining(
     public_dirs: list[Path | str],
     checkpoint_path: Optional[str] = None,
     output_dir: str = "results/checkpoints",
+    lora_r: int = 16,
+    lora_alpha: float = 32.0,
+    decoder_type: str = "carafe",
+    lambda_focal: float = 1.0,
+    lambda_dice: float = 1.0,
+    lambda_boundary: float = 0.2,
     epochs: int = 20,
     batch_size: int = 4,
     lr: float = 1e-4,
@@ -290,13 +301,23 @@ def run_pretraining(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, drop_last=False)
 
     print(f"[INFO] Starting Pre-training on {len(dataset)} samples ({train_len} train, {val_len} val)...")
-    model = HistoSAM_LoRA(checkpoint_path=checkpoint_path, num_classes=3, r=16)
+    model = HistoSAM_LoRA(
+        checkpoint_path=checkpoint_path,
+        num_classes=3,
+        r=lora_r,
+        lora_alpha=lora_alpha,
+        decoder_type=decoder_type,
+    )
     model.to(device)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = AdamW(trainable_params, lr=lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-    criterion = BoundaryAwareJointLoss().to(device)
+    criterion = BoundaryAwareJointLoss(
+        lambda_focal=lambda_focal,
+        lambda_dice=lambda_dice,
+        lambda_boundary=lambda_boundary,
+    ).to(device)
     scaler = GradScaler(enabled=use_amp and device.type == "cuda")
 
     best_dice = 0.0
@@ -328,6 +349,18 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size (recommended: 4 for 12GB VRAM)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Initial learning rate")
+    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank r (0 for frozen MedSAM baseline, 2, 4, 8, 16, 32)")
+    parser.add_argument("--lora_alpha", type=float, default=16.0, help="LoRA scaling factor alpha")
+    parser.add_argument(
+        "--decoder_type",
+        type=str,
+        default="carafe",
+        choices=["carafe", "bilinear", "nearest", "conv_transpose", "pixel_shuffle"],
+        help="Semantic upsampling decoder architecture",
+    )
+    parser.add_argument("--lambda_focal", type=float, default=1.0, help="Focal loss weight")
+    parser.add_argument("--lambda_dice", type=float, default=1.0, help="Dice loss weight")
+    parser.add_argument("--lambda_boundary", type=float, default=0.2, help="Boundary Laplacian loss weight")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--no_amp", action="store_true", help="Disable AMP mixed precision")
 
@@ -342,6 +375,12 @@ if __name__ == "__main__":
             public_dirs=args.public_dirs,
             checkpoint_path=chk,
             output_dir=args.output_dir,
+            lora_r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            decoder_type=args.decoder_type,
+            lambda_focal=args.lambda_focal,
+            lambda_dice=args.lambda_dice,
+            lambda_boundary=args.lambda_boundary,
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
@@ -360,6 +399,12 @@ if __name__ == "__main__":
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
+            lora_r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            decoder_type=args.decoder_type,
+            lambda_focal=args.lambda_focal,
+            lambda_dice=args.lambda_dice,
+            lambda_boundary=args.lambda_boundary,
             seed=args.seed,
             use_amp=not args.no_amp,
         )

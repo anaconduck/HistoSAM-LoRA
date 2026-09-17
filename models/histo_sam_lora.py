@@ -27,7 +27,7 @@ for p in [str(PROJECT_ROOT), str(MEDSAM_DIR)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from segment_anything import sam_model_registry
+from segment_anything import sam_model_registry  # type: ignore
 try:
     from models.carafe_module import CARAFE
 except ImportError:
@@ -229,17 +229,16 @@ class CARAFESemanticDecoder(nn.Module):
     def forward(
         self, x: torch.Tensor, target_size: Optional[Tuple[int, int]] = None
     ) -> torch.Tensor:
-        # x: (B, 256, 64, 64)
-        x = self.carafe1(x)  # -> (B, 128, 128, 128)
+        x = self.carafe1(x)
         x = self.res1(x)
 
-        x = self.carafe2(x)  # -> (B, 64, 256, 256)
+        x = self.carafe2(x)
         x = self.res2(x)
 
-        x = self.carafe3(x)  # -> (B, 32, 512, 512)
+        x = self.carafe3(x)
         x = self.res3(x)
 
-        logits = self.seg_head(x)  # -> (B, num_classes, 512, 512)
+        logits = self.seg_head(x)
 
         if target_size is not None and (
             logits.shape[2] != target_size[0] or logits.shape[3] != target_size[1]
@@ -249,6 +248,212 @@ class CARAFESemanticDecoder(nn.Module):
             )
 
         return logits
+
+
+class BilinearSemanticDecoder(nn.Module):
+    """Standard Bilinear Interpolation Decoder (Baseline SAM / SAMed)."""
+
+    def __init__(self, in_channels: int = 256, num_classes: int = 3):
+        super().__init__()
+        self.num_classes = num_classes
+
+        # Stage 1: 64x64 -> 128x128
+        self.conv1 = nn.Conv2d(in_channels, 128, kernel_size=3, padding=1, bias=False)
+        self.res1 = ResidualConvBlock(128, num_groups=16)
+
+        # Stage 2: 128x128 -> 256x256
+        self.conv2 = nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False)
+        self.res2 = ResidualConvBlock(64, num_groups=8)
+
+        # Stage 3: 256x256 -> 512x512
+        self.conv3 = nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False)
+        self.res3 = ResidualConvBlock(32, num_groups=4)
+
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(num_groups=4, num_channels=32),
+            nn.GELU(),
+            nn.Dropout2d(p=0.1),
+            nn.Conv2d(32, num_classes, kernel_size=1),
+        )
+
+    def forward(
+        self, x: torch.Tensor, target_size: Optional[Tuple[int, int]] = None
+    ) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        x = self.res1(self.conv1(x))
+
+        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        x = self.res2(self.conv2(x))
+
+        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        x = self.res3(self.conv3(x))
+
+        logits = self.seg_head(x)
+        if target_size is not None and (
+            logits.shape[2] != target_size[0] or logits.shape[3] != target_size[1]
+        ):
+            logits = F.interpolate(
+                logits, size=target_size, mode="bilinear", align_corners=False
+            )
+        return logits
+
+
+class NearestSemanticDecoder(nn.Module):
+    """Nearest Neighbor Interpolation Decoder."""
+
+    def __init__(self, in_channels: int = 256, num_classes: int = 3):
+        super().__init__()
+        self.num_classes = num_classes
+
+        self.conv1 = nn.Conv2d(in_channels, 128, kernel_size=3, padding=1, bias=False)
+        self.res1 = ResidualConvBlock(128, num_groups=16)
+
+        self.conv2 = nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False)
+        self.res2 = ResidualConvBlock(64, num_groups=8)
+
+        self.conv3 = nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False)
+        self.res3 = ResidualConvBlock(32, num_groups=4)
+
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(num_groups=4, num_channels=32),
+            nn.GELU(),
+            nn.Dropout2d(p=0.1),
+            nn.Conv2d(32, num_classes, kernel_size=1),
+        )
+
+    def forward(
+        self, x: torch.Tensor, target_size: Optional[Tuple[int, int]] = None
+    ) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2, mode="nearest")
+        x = self.res1(self.conv1(x))
+
+        x = F.interpolate(x, scale_factor=2, mode="nearest")
+        x = self.res2(self.conv2(x))
+
+        x = F.interpolate(x, scale_factor=2, mode="nearest")
+        x = self.res3(self.conv3(x))
+
+        logits = self.seg_head(x)
+        if target_size is not None and (
+            logits.shape[2] != target_size[0] or logits.shape[3] != target_size[1]
+        ):
+            logits = F.interpolate(
+                logits, size=target_size, mode="bilinear", align_corners=False
+            )
+        return logits
+
+
+class ConvTransposeSemanticDecoder(nn.Module):
+    """Transposed Convolution (Deconvolution) Decoder."""
+
+    def __init__(self, in_channels: int = 256, num_classes: int = 3):
+        super().__init__()
+        self.num_classes = num_classes
+
+        self.deconv1 = nn.ConvTranspose2d(in_channels, 128, kernel_size=2, stride=2)
+        self.res1 = ResidualConvBlock(128, num_groups=16)
+
+        self.deconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.res2 = ResidualConvBlock(64, num_groups=8)
+
+        self.deconv3 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.res3 = ResidualConvBlock(32, num_groups=4)
+
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(num_groups=4, num_channels=32),
+            nn.GELU(),
+            nn.Dropout2d(p=0.1),
+            nn.Conv2d(32, num_classes, kernel_size=1),
+        )
+
+    def forward(
+        self, x: torch.Tensor, target_size: Optional[Tuple[int, int]] = None
+    ) -> torch.Tensor:
+        x = self.res1(self.deconv1(x))
+        x = self.res2(self.deconv2(x))
+        x = self.res3(self.deconv3(x))
+
+        logits = self.seg_head(x)
+        if target_size is not None and (
+            logits.shape[2] != target_size[0] or logits.shape[3] != target_size[1]
+        ):
+            logits = F.interpolate(
+                logits, size=target_size, mode="bilinear", align_corners=False
+            )
+        return logits
+
+
+class PixelShuffleSemanticDecoder(nn.Module):
+    """Sub-Pixel Convolution (PixelShuffle) Decoder."""
+
+    def __init__(self, in_channels: int = 256, num_classes: int = 3):
+        super().__init__()
+        self.num_classes = num_classes
+
+        # Stage 1: 256 -> 128*4 -> PixelShuffle(2) -> 128
+        self.conv1 = nn.Conv2d(in_channels, 128 * 4, kernel_size=3, padding=1, bias=False)
+        self.ps1 = nn.PixelShuffle(2)
+        self.res1 = ResidualConvBlock(128, num_groups=16)
+
+        # Stage 2: 128 -> 64*4 -> PixelShuffle(2) -> 64
+        self.conv2 = nn.Conv2d(128, 64 * 4, kernel_size=3, padding=1, bias=False)
+        self.ps2 = nn.PixelShuffle(2)
+        self.res2 = ResidualConvBlock(64, num_groups=8)
+
+        # Stage 3: 64 -> 32*4 -> PixelShuffle(2) -> 32
+        self.conv3 = nn.Conv2d(64, 32 * 4, kernel_size=3, padding=1, bias=False)
+        self.ps3 = nn.PixelShuffle(2)
+        self.res3 = ResidualConvBlock(32, num_groups=4)
+
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(num_groups=4, num_channels=32),
+            nn.GELU(),
+            nn.Dropout2d(p=0.1),
+            nn.Conv2d(32, num_classes, kernel_size=1),
+        )
+
+    def forward(
+        self, x: torch.Tensor, target_size: Optional[Tuple[int, int]] = None
+    ) -> torch.Tensor:
+        x = self.res1(self.ps1(self.conv1(x)))
+        x = self.res2(self.ps2(self.conv2(x)))
+        x = self.res3(self.ps3(self.conv3(x)))
+
+        logits = self.seg_head(x)
+        if target_size is not None and (
+            logits.shape[2] != target_size[0] or logits.shape[3] != target_size[1]
+        ):
+            logits = F.interpolate(
+                logits, size=target_size, mode="bilinear", align_corners=False
+            )
+        return logits
+
+
+def build_semantic_decoder(
+    decoder_type: str = "carafe",
+    in_channels: int = 256,
+    num_classes: int = 3,
+) -> nn.Module:
+    """Factory function for instantiating the requested decoder architecture."""
+    dtype = decoder_type.lower()
+    if dtype == "carafe":
+        return CARAFESemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+    elif dtype == "bilinear":
+        return BilinearSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+    elif dtype == "nearest":
+        return NearestSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+    elif dtype in ("conv_transpose", "deconv"):
+        return ConvTransposeSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+    elif dtype in ("pixel_shuffle", "pixelshuffle", "subpixel"):
+        return PixelShuffleSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+    else:
+        raise ValueError(
+            f"Unknown decoder_type: {decoder_type}. Supported: 'carafe', 'bilinear', 'nearest', 'conv_transpose', 'pixel_shuffle'"
+        )
 
 
 class HistoSAM_LoRA(nn.Module):
@@ -268,11 +473,13 @@ class HistoSAM_LoRA(nn.Module):
         r: int = 8,
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.05,
+        decoder_type: str = "carafe",
     ):
         super().__init__()
         self.num_classes = num_classes
         self.r = r
         self.lora_alpha = lora_alpha
+        self.decoder_type = decoder_type
 
         # 1. Initialize MedSAM ViT-B
         sam = sam_model_registry["vit_b"](checkpoint=checkpoint_path)
@@ -287,26 +494,28 @@ class HistoSAM_LoRA(nn.Module):
         for param in self.image_encoder.parameters():
             param.requires_grad = False
 
-        # 3. Inject LoRA into all attention blocks
+        # 3. Inject LoRA into all attention blocks (if r > 0; if r=0 encoder remains 100% frozen)
         self.lora_layers: List[LoRA_qkv] = []
-        for block in self.image_encoder.blocks:
-            original_qkv = block.attn.qkv
-            lora_module = LoRA_qkv(
-                original_qkv,
-                r=r,
-                lora_alpha=lora_alpha,
-                lora_dropout=lora_dropout,
-            )
-            block.attn.qkv = lora_module
-            self.lora_layers.append(lora_module)
+        if self.r > 0:
+            for block in self.image_encoder.blocks:
+                original_qkv = block.attn.qkv
+                lora_module = LoRA_qkv(
+                    original_qkv,
+                    r=self.r,
+                    lora_alpha=lora_alpha,
+                    lora_dropout=lora_dropout,
+                )
+                block.attn.qkv = lora_module
+                self.lora_layers.append(lora_module)
 
         # 4. Prompt-Free Bottleneck
         self.bottleneck = PromptFreeTissueBottleneck(
             in_channels=256, num_classes=num_classes
         )
 
-        # 5. CARAFE-Enhanced Semantic Decoder
-        self.decoder = CARAFESemanticDecoder(
+        # 5. Semantic Decoder (CARAFE, Bilinear, Nearest, ConvTranspose, or PixelShuffle)
+        self.decoder = build_semantic_decoder(
+            decoder_type=decoder_type,
             in_channels=256,
             num_classes=num_classes,
         )
@@ -337,7 +546,7 @@ class HistoSAM_LoRA(nn.Module):
         # Prompt-Free Class Bottleneck Modulation
         features = self.bottleneck(features)  # (B, 256, 64, 64)
 
-        # CARAFE Upsampling to target patch resolution
+        # Upsampling to target patch resolution
         logits = self.decoder(features, target_size=(H, W))  # (B, num_classes, H, W)
 
         return logits
@@ -364,7 +573,7 @@ class HistoSAM_LoRA(nn.Module):
         """Prints a clean summary of model parameters."""
         stats = self.parameter_statistics()
         print("=" * 60)
-        print(" HistoSAM-LoRA Parameter Summary (Target: RTX 5070 12GB VRAM)")
+        print(f" HistoSAM (r={self.r}, decoder={self.decoder_type}) Parameter Summary")
         print("=" * 60)
         print(f" Total Parameters      : {stats['total']:,}")
         print(f" Frozen Parameters     : {stats['frozen']:,} ({100 - stats['trainable_percent']:.2f}%)")
@@ -372,10 +581,7 @@ class HistoSAM_LoRA(nn.Module):
         print("=" * 60)
 
     def save_trainable_weights(self, save_path: str):
-        """Saves ONLY trainable parameters (LoRA + Bottleneck + Decoder).
-
-        Saves ~5MB file instead of full 350MB+ weights.
-        """
+        """Saves ONLY trainable parameters (LoRA + Bottleneck + Decoder)."""
         trainable_state = {}
         for k, v in self.state_dict().items():
             if any(name in k for name in ["lora_", "bottleneck", "decoder"]):
@@ -408,6 +614,7 @@ def build_histo_sam_lora(
         checkpoint_path=checkpoint_path,
         num_classes=num_classes,
         r=lora_rank,
+        decoder_type=decoder_type,
     )
 
 

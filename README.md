@@ -43,6 +43,15 @@ Histopatologi/
 ├── evaluation/
 │   ├── metrics.py                         # mIoU, Dice, HD95, ASD, Precision, Sensitivity
 │   └── visualize_results.py              # Generator gambar komparatif untuk paper
+├── docs/
+│   ├── 01_PROJECT_OVERVIEW.md            # Konteks penelitian & batasan keras
+│   ├── 02_DATA_PREPARATION.md            # Pipeline data, tiling, split generation
+│   ├── 03_MODEL_ARCHITECTURE.md          # Referensi arsitektur HistoSAM-LoRA
+│   ├── 04_TRAINING_PIPELINE.md           # Panduan training & CLI eksperimen
+│   ├── 05_EVALUATION_INFERENCE.md        # Metrik evaluasi & inference klinis
+│   ├── 06_EXPERIMENT_MATRIX.md           # Matriks eksperimen & ablation study
+│   ├── 07_CODING_CONVENTIONS.md          # Konvensi kode & aturan agent
+│   └── 08_TROUBLESHOOTING.md             # Debugging & known issues
 ├── inference.py                           # Clinical inference & tissue quantification
 ├── download_weights.py                    # Downloader bobot MedSAM resmi
 ├── requirements.txt                       # Dependensi Python
@@ -306,18 +315,37 @@ python inference.py --image_path data/liver_primary/processed/images/sample.png
 
 ## 📄 Cara Mereproduksi Tabel
 
+Semua eksperimen pada tabel dapat direproduksi langsung menggunakan perintah CLI berikut:
+
 ```bash
-# 1. Jalankan 5-Fold Cross-Validation
-python training/train_all_folds.py --epochs 30 --batch_size 4
+# 1. Proposed Model (HistoSAM-LoRA: LoRA r=8 + CARAFE + Boundary Loss, Tabel 1)
+python training/train_all_folds.py --lora_rank 8 --decoder_type carafe --lambda_boundary 0.2 --epochs 30
 
-# 2. Hasil otomatis tersimpan di:
-#    - results/final_kfold_summary.json  (Mean ± Std per metrik)
-#    - results/final_kfold_summary.csv   (Raw per-fold data)
+# 2. Baseline MedSAM (Frozen Encoder / Decoder-Only, Tabel 1)
+python training/train_all_folds.py --lora_rank 0 --decoder_type bilinear --epochs 30
 
-# 3. Jalankan baseline U-Net untuk perbandingan
-python baselines/unet_baseline.py --split_file data/splits/split_r0_f0.json --epochs 40
+# 3. Baseline SAMed (LoRA r=4 + Bilinear Decoder, Tabel 1 & S1)
+python training/train_all_folds.py --lora_rank 4 --decoder_type bilinear --epochs 30
 
-# 4. Generate visualisasi komparatif untuk paper
+# 4. Variasi Arsitektur Decoder (Tabel S1: conv_transpose / pixel_shuffle / nearest)
+python training/train_all_folds.py --lora_rank 8 --decoder_type pixel_shuffle --epochs 30
+python training/train_all_folds.py --lora_rank 8 --decoder_type conv_transpose --epochs 30
+
+# 5. Sensitivitas Parameter LoRA Rank (Tabel S2: r = 2, 4, 16, 32)
+python training/train_all_folds.py --lora_rank 16 --lora_alpha 32.0 --epochs 30
+
+# 6. Sensitivitas Bobot Boundary Loss (Tabel S6: lambda_boundary = 0.05, 0.1, 0.5)
+python training/train_all_folds.py --lambda_boundary 0.1 --epochs 30
+
+# 7. Baseline CNN Medis (U-Net & Attention U-Net, Tabel 1)
+python baselines/unet_baseline.py --model unet --split_file data/splits/split_r0_f0.json --epochs 40
+python baselines/unet_baseline.py --model attention_unet --split_file data/splits/split_r0_f0.json --epochs 40
+
+# 8. Phase 1 Pre-training & Phase 2 Iterative Self-Training (Tabel S4 & S5)
+python training/train.py --phase pretrain --epochs 20 --batch_size 4
+python training/self_training.py --iterations 3 --threshold 0.85
+
+# 9. Generate Visualisasi Komparatif Hasil Prediksi untuk Paper
 python evaluation/visualize_results.py \
     --image data/liver_primary/processed/images/sample.png \
     --output results/figures/comparison.png

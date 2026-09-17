@@ -26,6 +26,12 @@ def train_all_folds(
     data_dir: str = "data/liver_primary/processed",
     medsam_checkpoint: str = "models/MedSAM/medsam_vit_b.pth",
     output_dir: str = "results/checkpoints",
+    lora_r: int = 8,
+    lora_alpha: float = 16.0,
+    decoder_type: str = "carafe",
+    lambda_focal: float = 1.0,
+    lambda_dice: float = 1.0,
+    lambda_boundary: float = 0.2,
     epochs: int = 30,
     batch_size: int = 4,
     lr: float = 1e-4,
@@ -42,6 +48,7 @@ def train_all_folds(
         return
 
     print(f"[INFO] Found {len(split_files)} split files to train in {splits_dir}.")
+    print(f"[INFO] Model Configuration: r={lora_r}, decoder={decoder_type}, lambda_boundary={lambda_boundary}")
 
     chk = medsam_checkpoint if Path(medsam_checkpoint).exists() else None
     if chk is None:
@@ -62,6 +69,12 @@ def train_all_folds(
             epochs=epochs,
             batch_size=batch_size,
             lr=lr,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            decoder_type=decoder_type,
+            lambda_focal=lambda_focal,
+            lambda_dice=lambda_dice,
+            lambda_boundary=lambda_boundary,
             seed=seed + idx,
             use_amp=use_amp,
         )
@@ -115,6 +128,18 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="data/liver_primary/processed")
     parser.add_argument("--medsam_checkpoint", type=str, default="models/MedSAM/medsam_vit_b.pth")
     parser.add_argument("--output_dir", type=str, default="results/checkpoints")
+    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank r (0 for frozen MedSAM baseline, 2, 4, 8, 16, 32)")
+    parser.add_argument("--lora_alpha", type=float, default=16.0, help="LoRA alpha scaling factor")
+    parser.add_argument(
+        "--decoder_type",
+        type=str,
+        default="carafe",
+        choices=["carafe", "bilinear", "nearest", "conv_transpose", "pixel_shuffle"],
+        help="Semantic upsampling decoder architecture",
+    )
+    parser.add_argument("--lambda_focal", type=float, default=1.0, help="Focal loss weight")
+    parser.add_argument("--lambda_dice", type=float, default=1.0, help="Dice loss weight")
+    parser.add_argument("--lambda_boundary", type=float, default=0.2, help="Boundary Laplacian loss weight")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -127,6 +152,12 @@ if __name__ == "__main__":
         data_dir=args.data_dir,
         medsam_checkpoint=args.medsam_checkpoint,
         output_dir=args.output_dir,
+        lora_r=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        decoder_type=args.decoder_type,
+        lambda_focal=args.lambda_focal,
+        lambda_dice=args.lambda_dice,
+        lambda_boundary=args.lambda_boundary,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,

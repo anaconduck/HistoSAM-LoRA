@@ -55,18 +55,18 @@ class UNet(nn.Module):
         self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
         self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
-        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(512, 512))
+        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(512, 1024))
 
-        self.up1 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.conv1 = DoubleConv(512, 256)
+        self.up1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.conv1 = DoubleConv(1024, 512)
 
-        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.conv2 = DoubleConv(256, 128)
+        self.up2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.conv2 = DoubleConv(512, 256)
 
-        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.conv3 = DoubleConv(128, 64)
+        self.up3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.conv3 = DoubleConv(256, 128)
 
-        self.up4 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
+        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
         self.conv4 = DoubleConv(128, 64)
 
         self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
@@ -94,17 +94,102 @@ class UNet(nn.Module):
         return logits
 
 
+class AttentionBlock(nn.Module):
+    """Attention Gate for Attention U-Net (Oktay et al., 2018)."""
+
+    def __init__(self, f_g: int, f_l: int, f_int: int):
+        super().__init__()
+        self.w_g = nn.Sequential(
+            nn.Conv2d(f_g, f_int, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(f_int),
+        )
+        self.w_x = nn.Sequential(
+            nn.Conv2d(f_l, f_int, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(f_int),
+        )
+        self.psi = nn.Sequential(
+            nn.Conv2d(f_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid(),
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, g: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        g1 = self.w_g(g)
+        x1 = self.w_x(x)
+        psi = self.relu(g1 + x1)
+        psi = self.psi(psi)
+        return x * psi
+
+
+class AttentionUNet(nn.Module):
+    """Attention U-Net architecture (Oktay et al., 2018)."""
+
+    def __init__(self, n_channels: int = 3, n_classes: int = 3):
+        super().__init__()
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
+        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(512, 1024))
+
+        self.up1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.att1 = AttentionBlock(f_g=512, f_l=512, f_int=256)
+        self.conv1 = DoubleConv(1024, 512)
+
+        self.up2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.att2 = AttentionBlock(f_g=256, f_l=256, f_int=128)
+        self.conv2 = DoubleConv(512, 256)
+
+        self.up3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.att3 = AttentionBlock(f_g=128, f_l=128, f_int=64)
+        self.conv3 = DoubleConv(256, 128)
+
+        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.att4 = AttentionBlock(f_g=64, f_l=64, f_int=32)
+        self.conv4 = DoubleConv(128, 64)
+
+        self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+
+        d1 = self.up1(x5)
+        x4_att = self.att1(g=d1, x=x4)
+        d1 = self.conv1(torch.cat([x4_att, d1], dim=1))
+
+        d2 = self.up2(d1)
+        x3_att = self.att2(g=d2, x=x3)
+        d2 = self.conv2(torch.cat([x3_att, d2], dim=1))
+
+        d3 = self.up3(d2)
+        x2_att = self.att3(g=d3, x=x2)
+        d3 = self.conv3(torch.cat([x2_att, d3], dim=1))
+
+        d4 = self.up4(d3)
+        x1_att = self.att4(g=d4, x=x1)
+        d4 = self.conv4(torch.cat([x1_att, d4], dim=1))
+
+        logits = self.outc(d4)
+        return logits
+
+
 def train_unet_baseline(
     split_file: str,
     data_dir: str = "data/liver_primary/processed",
     output_dir: str = "results/checkpoints",
+    model_type: str = "unet",
     epochs: int = 40,
     batch_size: int = 8,
     lr: float = 1e-4,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
     dev = torch.device(device)
-    print(f"[INFO] Training U-Net baseline on {dev}...")
+    print(f"[INFO] Training {model_type.upper()} baseline on {dev}...")
 
     train_loader, val_loader = build_dataloaders_from_split(
         split_file=split_file,
@@ -114,7 +199,11 @@ def train_unet_baseline(
         img_size=512,
     )
 
-    model = UNet(n_channels=3, n_classes=3).to(dev)
+    if model_type.lower() == "attention_unet":
+        model = AttentionUNet(n_channels=3, n_classes=3).to(dev)
+    else:
+        model = UNet(n_channels=3, n_classes=3).to(dev)
+
     criterion = nn.CrossEntropyLoss(ignore_index=255)
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
@@ -160,14 +249,15 @@ def train_unet_baseline(
 
         if metrics["mDice"] > best_dice:
             best_dice = metrics["mDice"]
-            save_file = out_path / f"unet_baseline_{split_stem}_best.pth"
+            save_file = out_path / f"{model_type.lower()}_baseline_{split_stem}_best.pth"
             torch.save(model.state_dict(), str(save_file))
-            print(f"  --> Saved best U-Net model ({best_dice*100:.2f}%) to {save_file.name}")
+            print(f"  --> Saved best {model_type} model ({best_dice*100:.2f}%) to {save_file.name}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train U-Net baseline on histopathology")
+    parser = argparse.ArgumentParser(description="Train U-Net / Attention U-Net baseline on histopathology")
     parser.add_argument("--split_file", type=str, required=True, help="Path to split JSON file")
+    parser.add_argument("--model", type=str, default="unet", choices=["unet", "attention_unet"], help="Model architecture")
     parser.add_argument("--data_dir", type=str, default="data/liver_primary/processed")
     parser.add_argument("--output_dir", type=str, default="results/checkpoints")
     parser.add_argument("--epochs", type=int, default=40)
@@ -180,6 +270,7 @@ if __name__ == "__main__":
         split_file=args.split_file,
         data_dir=args.data_dir,
         output_dir=args.output_dir,
+        model_type=args.model,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
