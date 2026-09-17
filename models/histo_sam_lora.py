@@ -20,18 +20,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Ensure workspace and MedSAM paths are in sys.path
+# Ensure workspace and MedSAM paths are in sys.path dynamically
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MEDSAM_DIR = Path(__file__).resolve().parent / "MedSAM"
 for p in [str(PROJECT_ROOT), str(MEDSAM_DIR)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from segment_anything import sam_model_registry  # type: ignore
-try:
-    from models.carafe_module import CARAFE
-except ImportError:
-    from carafe_module import CARAFE
+from segment_anything import sam_model_registry
+from models.carafe_module import CARAFE
 
 
 class LoRA_qkv(nn.Module):
