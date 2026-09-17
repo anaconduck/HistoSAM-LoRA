@@ -1,13 +1,3 @@
-"""Training Pipeline for HistoSAM-LoRA with Repeated Patient-Level Stratified K-Fold.
-
-Features:
-- Parameter-efficient fine-tuning: Trains only LoRA and CARAFE decoder (~1.2% params).
-- Strict VRAM management for RTX 5070 (12GB limit) with torch.cuda.amp mixed precision.
-- Boundary-Aware Joint Focal-Dice Loss with ignore_index=255 support.
-- Full validation with Q1 clinical metrics (mIoU, mDice, HD95, ASD).
-- Lightweight checkpointing (~5MB per fold).
-"""
-
 import os
 import sys
 import json
@@ -23,7 +13,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 
-# Ensure workspace paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,7 +24,7 @@ from data.dataset import build_dataloaders_from_split
 
 
 def set_seed(seed: int = 42):
-    """Sets deterministic random seed for strict reproducibility."""
+
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
@@ -43,11 +32,13 @@ def set_seed(seed: int = 42):
 
 
 def print_vram_usage(device: torch.device):
-    """Displays current GPU VRAM utilization."""
+
     if device.type == "cuda":
         allocated = torch.cuda.memory_allocated(device) / (1024**3)
         reserved = torch.cuda.memory_reserved(device) / (1024**3)
-        print(f"[VRAM Monitor] Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB (Limit: 12.0 GB)")
+        print(
+            f"[VRAM Monitor] Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB (Limit: 12.0 GB)"
+        )
 
 
 def train_one_epoch(
@@ -154,7 +145,6 @@ def run_training(
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # 1. Build DataLoaders
     print(f"[INFO] Loading split from {split_file}...")
     train_loader, val_loader = build_dataloaders_from_split(
         split_file=split_file,
@@ -164,7 +154,6 @@ def run_training(
         img_size=512,
     )
 
-    # 2. Build HistoSAM-LoRA model
     print(f"[INFO] Initializing HistoSAM (r={lora_r}, decoder={decoder_type})...")
     model = HistoSAM_LoRA(
         checkpoint_path=checkpoint_path,
@@ -177,13 +166,11 @@ def run_training(
     model.print_parameter_summary()
     print_vram_usage(device)
 
-    # 3. Setup Optimizer & Scheduler
     trainable_params = model.get_trainable_parameters()
     optimizer = AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
     scaler = GradScaler(enabled=(use_amp and device.type == "cuda"))
 
-    # 4. Setup Loss Function
     criterion = BoundaryAwareJointLoss(
         gamma=2.0,
         lambda_focal=lambda_focal,
@@ -192,7 +179,6 @@ def run_training(
         ignore_index=255,
     ).to(device)
 
-    # 5. Training Loop
     split_stem = Path(split_file).stem
     best_dice = 0.0
     history = []
@@ -216,7 +202,6 @@ def run_training(
 
         scheduler.step()
 
-        # Validate (compute boundary metrics every 5 epochs or last epoch for speed)
         compute_boundary = (epoch % 5 == 0) or (epoch == epochs)
         val_metrics, current_dice = validate(
             model=model,
@@ -247,14 +232,14 @@ def run_training(
         )
         print_vram_usage(device)
 
-        # Save best checkpoint
         if current_dice > best_dice:
             best_dice = current_dice
             best_model_path = out_path / f"{split_stem}_best.pth"
             model.save_trainable_weights(str(best_model_path))
-            print(f"  --> Saved new best model (mDice: {best_dice*100:.2f}%) to {best_model_path.name}")
+            print(
+                f"  --> Saved new best model (mDice: {best_dice*100:.2f}%) to {best_model_path.name}"
+            )
 
-    # Save complete history JSON
     history_file = out_path / f"{split_stem}_history.json"
     with open(history_file, "w") as f:
         json.dump(history, f, indent=2)
@@ -279,7 +264,7 @@ def run_pretraining(
     seed: int = 42,
     use_amp: bool = True,
 ):
-    """Pre-trains HistoSAM-LoRA on public liver histopathology datasets."""
+
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_path = Path(output_dir)
@@ -290,17 +275,27 @@ def run_pretraining(
 
     dataset = PublicLiverDataset(public_dirs, img_size=512)
     if len(dataset) == 0:
-        print("[ERROR] No public dataset samples found. Generate with 'python data/preprocessing/download_public_data.py --synthetic-demo'.")
+        print(
+            "[ERROR] No public dataset samples found. Generate with 'python data/preprocessing/download_public_data.py --synthetic-demo'."
+        )
         return
 
     val_len = max(1, int(len(dataset) * 0.2))
     train_len = len(dataset) - val_len
-    train_ds, val_ds = random_split(dataset, [train_len, val_len], generator=torch.Generator().manual_seed(seed))
+    train_ds, val_ds = random_split(
+        dataset, [train_len, val_len], generator=torch.Generator().manual_seed(seed)
+    )
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, drop_last=False)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, drop_last=False
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, drop_last=False
+    )
 
-    print(f"[INFO] Starting Pre-training on {len(dataset)} samples ({train_len} train, {val_len} val)...")
+    print(
+        f"[INFO] Starting Pre-training on {len(dataset)} samples ({train_len} train, {val_len} val)..."
+    )
     model = HistoSAM_LoRA(
         checkpoint_path=checkpoint_path,
         num_classes=3,
@@ -322,12 +317,23 @@ def run_pretraining(
 
     best_dice = 0.0
     for epoch in range(1, epochs + 1):
-        train_metrics = train_one_epoch(model, train_loader, optimizer, criterion, scaler, device, use_amp)
-        val_metrics, _ = validate(model, val_loader, criterion, device, num_classes=3, compute_boundary_metrics=False)
+        train_metrics = train_one_epoch(
+            model, train_loader, optimizer, criterion, scaler, device, use_amp
+        )
+        val_metrics, _ = validate(
+            model,
+            val_loader,
+            criterion,
+            device,
+            num_classes=3,
+            compute_boundary_metrics=False,
+        )
         scheduler.step()
 
         current_dice = val_metrics["mDice"]
-        print(f"Pre-train Epoch [{epoch:02d}/{epochs:02d}] Loss: {train_metrics['train_loss']:.4f} | Val Dice: {current_dice*100:.2f}%")
+        print(
+            f"Pre-train Epoch [{epoch:02d}/{epochs:02d}] Loss: {train_metrics['train_loss']:.4f} | Val Dice: {current_dice*100:.2f}%"
+        )
 
         if current_dice >= best_dice:
             best_dice = current_dice
@@ -335,22 +341,71 @@ def run_pretraining(
             model.save_trainable_weights(str(best_save))
             print(f"  --> Saved new best pre-trained model to {best_save.name}")
 
-    print(f"[SUCCESS] Pre-training completed. Best model saved to {out_path / 'pretrain_best.pth'}")
+    print(
+        f"[SUCCESS] Pre-training completed. Best model saved to {out_path / 'pretrain_best.pth'}"
+    )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train HistoSAM-LoRA for Hepatic Pathology")
-    parser.add_argument("--phase", type=str, default="kfold", choices=["pretrain", "kfold"], help="Phase: pretrain or kfold")
-    parser.add_argument("--split_file", type=str, default=None, help="Path to split JSON file (for kfold)")
-    parser.add_argument("--data_dir", type=str, default="data/liver_primary/processed", help="Path to processed patches")
-    parser.add_argument("--public_dirs", nargs="+", default=["data/public_pretrain/hepass", "data/public_pretrain/kmc_liver"], help="Paths to public dataset folders")
-    parser.add_argument("--medsam_checkpoint", type=str, default="models/MedSAM/medsam_vit_b.pth", help="Path to MedSAM ViT-B checkpoint")
-    parser.add_argument("--output_dir", type=str, default="results/checkpoints", help="Directory to save checkpoints")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size (recommended: 4 for 12GB VRAM)")
+    parser = argparse.ArgumentParser(
+        description="Train HistoSAM-LoRA for Hepatic Pathology"
+    )
+    parser.add_argument(
+        "--phase",
+        type=str,
+        default="kfold",
+        choices=["pretrain", "kfold"],
+        help="Phase: pretrain or kfold",
+    )
+    parser.add_argument(
+        "--split_file",
+        type=str,
+        default=None,
+        help="Path to split JSON file (for kfold)",
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="data/liver_primary/processed",
+        help="Path to processed patches",
+    )
+    parser.add_argument(
+        "--public_dirs",
+        nargs="+",
+        default=["data/public_pretrain/hepass", "data/public_pretrain/kmc_liver"],
+        help="Paths to public dataset folders",
+    )
+    parser.add_argument(
+        "--medsam_checkpoint",
+        type=str,
+        default="models/MedSAM/medsam_vit_b.pth",
+        help="Path to MedSAM ViT-B checkpoint",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="results/checkpoints",
+        help="Directory to save checkpoints",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=10, help="Number of training epochs"
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=4,
+        help="Batch size (recommended: 4 for 12GB VRAM)",
+    )
     parser.add_argument("--lr", type=float, default=1e-4, help="Initial learning rate")
-    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank r (0 for frozen MedSAM baseline, 2, 4, 8, 16, 32)")
-    parser.add_argument("--lora_alpha", type=float, default=16.0, help="LoRA scaling factor alpha")
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=8,
+        help="LoRA rank r (0 for frozen MedSAM baseline, 2, 4, 8, 16, 32)",
+    )
+    parser.add_argument(
+        "--lora_alpha", type=float, default=16.0, help="LoRA scaling factor alpha"
+    )
     parser.add_argument(
         "--decoder_type",
         type=str,
@@ -358,17 +413,30 @@ if __name__ == "__main__":
         choices=["carafe", "bilinear", "nearest", "conv_transpose", "pixel_shuffle"],
         help="Semantic upsampling decoder architecture",
     )
-    parser.add_argument("--lambda_focal", type=float, default=1.0, help="Focal loss weight")
-    parser.add_argument("--lambda_dice", type=float, default=1.0, help="Dice loss weight")
-    parser.add_argument("--lambda_boundary", type=float, default=0.2, help="Boundary Laplacian loss weight")
+    parser.add_argument(
+        "--lambda_focal", type=float, default=1.0, help="Focal loss weight"
+    )
+    parser.add_argument(
+        "--lambda_dice", type=float, default=1.0, help="Dice loss weight"
+    )
+    parser.add_argument(
+        "--lambda_boundary",
+        type=float,
+        default=0.2,
+        help="Boundary Laplacian loss weight",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--no_amp", action="store_true", help="Disable AMP mixed precision")
+    parser.add_argument(
+        "--no_amp", action="store_true", help="Disable AMP mixed precision"
+    )
 
     args = parser.parse_args()
 
     chk = args.medsam_checkpoint if Path(args.medsam_checkpoint).exists() else None
     if chk is None:
-        print("[WARN] MedSAM checkpoint not found; initializing model with random weights for dry-run/testing.")
+        print(
+            "[WARN] MedSAM checkpoint not found; initializing model with random weights for dry-run/testing."
+        )
 
     if args.phase == "pretrain":
         run_pretraining(

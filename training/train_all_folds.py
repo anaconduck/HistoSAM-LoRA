@@ -1,9 +1,3 @@
-"""Automated Cross-Validation Runner for HistoSAM-LoRA across all K-Folds.
-
-Executes training sequentially across all splits, aggregates clinical metrics,
-and generates the final Mean +- Std table required for Q1 journal submissions.
-"""
-
 import sys
 import json
 import argparse
@@ -44,15 +38,21 @@ def train_all_folds(
     if not split_files:
         print(f"[ERROR] No split files found in {splits_dir}!")
         print("Please generate splits first using:")
-        print("python -c \"from data.dataset import create_patient_stratified_splits; create_patient_stratified_splits('data/liver_primary/processed/images', 'data/liver_primary/processed/masks', 'data/splits', n_splits=5, n_repeats=3)\"")
+        print(
+            "python -c \"from data.dataset import create_patient_stratified_splits; create_patient_stratified_splits('data/liver_primary/processed/images', 'data/liver_primary/processed/masks', 'data/splits', n_splits=5, n_repeats=3)\""
+        )
         return
 
     print(f"[INFO] Found {len(split_files)} split files to train in {splits_dir}.")
-    print(f"[INFO] Model Configuration: r={lora_r}, decoder={decoder_type}, lambda_boundary={lambda_boundary}")
+    print(
+        f"[INFO] Model Configuration: r={lora_r}, decoder={decoder_type}, lambda_boundary={lambda_boundary}"
+    )
 
     chk = medsam_checkpoint if Path(medsam_checkpoint).exists() else None
     if chk is None:
-        print("[WARN] MedSAM checkpoint not found. Model will train with randomly initialized base weights.")
+        print(
+            "[WARN] MedSAM checkpoint not found. Model will train with randomly initialized base weights."
+        )
 
     all_fold_results: List[Dict] = []
 
@@ -79,20 +79,25 @@ def train_all_folds(
             use_amp=use_amp,
         )
 
-        # Extract best epoch metrics based on mDice
         best_epoch = max(history, key=lambda x: x.get("mDice", 0.0))
         best_epoch["split_file"] = sfile.name
         all_fold_results.append(best_epoch)
 
-    # Aggregate results into final summary
     print("\n" + "=" * 70)
     print(" FINAL CROSS-VALIDATION SUMMARY (MEAN +- STD)")
     print("=" * 70)
 
     metrics_to_aggregate = [
-        "mIoU", "mDice", "IoU_necrosis", "Dice_necrosis",
-        "IoU_normal", "Dice_normal", "IoU_steatosis", "Dice_steatosis",
-        "mHD95", "mASD"
+        "mIoU",
+        "mDice",
+        "IoU_necrosis",
+        "Dice_necrosis",
+        "IoU_normal",
+        "Dice_normal",
+        "IoU_steatosis",
+        "Dice_steatosis",
+        "mHD95",
+        "mASD",
     ]
 
     summary_stats = {}
@@ -113,7 +118,9 @@ def train_all_folds(
 
     summary_json = out_summary_dir / "final_kfold_summary.json"
     with open(summary_json, "w") as f:
-        json.dump({"summary": summary_stats, "all_folds": all_fold_results}, f, indent=2)
+        json.dump(
+            {"summary": summary_stats, "all_folds": all_fold_results}, f, indent=2
+        )
 
     df_folds = pd.DataFrame(all_fold_results)
     summary_csv = out_summary_dir / "final_kfold_summary.csv"
@@ -126,10 +133,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run HistoSAM-LoRA across all K-Folds")
     parser.add_argument("--splits_dir", type=str, default="data/splits")
     parser.add_argument("--data_dir", type=str, default="data/liver_primary/processed")
-    parser.add_argument("--medsam_checkpoint", type=str, default="models/MedSAM/medsam_vit_b.pth")
+    parser.add_argument(
+        "--medsam_checkpoint", type=str, default="models/MedSAM/medsam_vit_b.pth"
+    )
     parser.add_argument("--output_dir", type=str, default="results/checkpoints")
-    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank r (0 for frozen MedSAM baseline, 2, 4, 8, 16, 32)")
-    parser.add_argument("--lora_alpha", type=float, default=16.0, help="LoRA alpha scaling factor")
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=8,
+        help="LoRA rank r (0 for frozen MedSAM baseline, 2, 4, 8, 16, 32)",
+    )
+    parser.add_argument(
+        "--lora_alpha", type=float, default=16.0, help="LoRA alpha scaling factor"
+    )
     parser.add_argument(
         "--decoder_type",
         type=str,
@@ -137,9 +153,18 @@ if __name__ == "__main__":
         choices=["carafe", "bilinear", "nearest", "conv_transpose", "pixel_shuffle"],
         help="Semantic upsampling decoder architecture",
     )
-    parser.add_argument("--lambda_focal", type=float, default=1.0, help="Focal loss weight")
-    parser.add_argument("--lambda_dice", type=float, default=1.0, help="Dice loss weight")
-    parser.add_argument("--lambda_boundary", type=float, default=0.2, help="Boundary Laplacian loss weight")
+    parser.add_argument(
+        "--lambda_focal", type=float, default=1.0, help="Focal loss weight"
+    )
+    parser.add_argument(
+        "--lambda_dice", type=float, default=1.0, help="Dice loss weight"
+    )
+    parser.add_argument(
+        "--lambda_boundary",
+        type=float,
+        default=0.2,
+        help="Boundary Laplacian loss weight",
+    )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)

@@ -1,9 +1,3 @@
-"""Automated downloader for official MedSAM ViT-B pre-trained weights.
-
-Downloads the 375MB foundation model checkpoint from verified HuggingFace / Zenodo mirrors
-with progress tracking, retry logic, and resume capability.
-"""
-
 import os
 import sys
 from pathlib import Path
@@ -25,7 +19,7 @@ MIRRORS = [
     ),
 ]
 
-EXPECTED_MIN_BYTES = 300 * 1024 * 1024  # ~350MB
+EXPECTED_MIN_BYTES = 300 * 1024 * 1024
 
 
 def download_medsam_weights(target_dir: str = "models/MedSAM"):
@@ -36,7 +30,9 @@ def download_medsam_weights(target_dir: str = "models/MedSAM"):
 
     if out_file.exists() and out_file.stat().st_size > EXPECTED_MIN_BYTES:
         size_mb = out_file.stat().st_size / (1024 * 1024)
-        print(f"[INFO] MedSAM checkpoint already exists at {out_file} ({size_mb:.1f} MB). Skipping download.")
+        print(
+            f"[INFO] MedSAM checkpoint already exists at {out_file} ({size_mb:.1f} MB). Skipping download."
+        )
         return True
 
     print("=" * 70)
@@ -54,9 +50,13 @@ def download_medsam_weights(target_dir: str = "models/MedSAM"):
         print(f"\n[ATTEMPT] Trying {name}...")
         print(f"  URL: {url}")
         try:
-            response = requests.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True)
+            response = requests.get(
+                url, headers=headers, stream=True, timeout=30, allow_redirects=True
+            )
             if response.status_code != 200:
-                print(f"  [WARN] Server responded with HTTP {response.status_code}. Trying next mirror...")
+                print(
+                    f"  [WARN] Server responded with HTTP {response.status_code}. Trying next mirror..."
+                )
                 continue
 
             total_size = int(response.headers.get("content-length", 0))
@@ -76,15 +76,19 @@ def download_medsam_weights(target_dir: str = "models/MedSAM"):
             response.close()
             del response
 
-            # Validate file size
             if temp_file.exists() and temp_file.stat().st_size > EXPECTED_MIN_BYTES:
                 import shutil
+
                 shutil.move(str(temp_file), str(out_file))
                 size_mb = out_file.stat().st_size / (1024 * 1024)
-                print(f"\n[SUCCESS] MedSAM checkpoint successfully downloaded to {out_file} ({size_mb:.1f} MB)!")
+                print(
+                    f"\n[SUCCESS] MedSAM checkpoint successfully downloaded to {out_file} ({size_mb:.1f} MB)!"
+                )
                 return True
             else:
-                print("\n[WARN] Downloaded file is incomplete or too small. Trying next mirror...")
+                print(
+                    "\n[WARN] Downloaded file is incomplete or too small. Trying next mirror..."
+                )
                 if temp_file.exists():
                     temp_file.unlink()
 

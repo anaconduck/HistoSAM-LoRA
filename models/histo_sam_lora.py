@@ -1,15 +1,3 @@
-"""HistoSAM-LoRA: Parameter-Efficient Adaptation of Medical Foundation Models
-with Morphology-Aware CARAFE Decoding for Zero-Augmented Few-Shot Hepatic Pathology.
-
-Target: Q1 Medical Image Analysis / IEEE TMI Publication.
-Design Constraints:
-- Frozen MedSAM (ViT-Base) encoder for maximum knowledge transfer.
-- Low-Rank Adaptation (LoRA) on Attention QKV projections (~1.5% trainable params).
-- Prompt-Free Tissue Class Bottleneck (replacing interactive point/box prompts).
-- CARAFE-Enhanced Semantic Decoder for amorphous tissue boundary reconstruction.
-- Strict VRAM efficiency for NVIDIA RTX 5070 (12GB VRAM).
-"""
-
 import sys
 import os
 import math
@@ -20,7 +8,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Ensure workspace and MedSAM paths are in sys.path dynamically
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MEDSAM_DIR = Path(__file__).resolve().parent / "MedSAM"
 for p in [str(PROJECT_ROOT), str(MEDSAM_DIR)]:
@@ -32,11 +19,6 @@ from models.carafe_module import CARAFE
 
 
 class LoRA_qkv(nn.Module):
-    """Low-Rank Adaptation (LoRA) injected into ViT Attention QKV projection.
-
-    Adapts Query (Q) and Value (V) projections while keeping Key (K) frozen.
-    Preserves exact pre-trained representation at initialization by zero-initializing B.
-    """
 
     def __init__(
         self,
@@ -52,33 +34,29 @@ class LoRA_qkv(nn.Module):
         self.scaling = lora_alpha / r
         self.dropout = nn.Dropout(p=lora_dropout) if lora_dropout > 0 else nn.Identity()
 
-        # LoRA matrices for Query
         self.lora_a_q = nn.Linear(self.dim, r, bias=False)
         self.lora_b_q = nn.Linear(r, self.dim, bias=False)
 
-        # LoRA matrices for Value
         self.lora_a_v = nn.Linear(self.dim, r, bias=False)
         self.lora_b_v = nn.Linear(r, self.dim, bias=False)
 
         self.reset_parameters()
 
-        # Freeze the base projection
         self.qkv.weight.requires_grad = False
         if self.qkv.bias is not None:
             self.qkv.bias.requires_grad = False
 
     def reset_parameters(self):
-        # Kaiming uniform for A, zero init for B -> Initial output is identical to base model
+
         nn.init.kaiming_uniform_(self.lora_a_q.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_b_q.weight)
         nn.init.kaiming_uniform_(self.lora_a_v.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_b_v.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Base frozen projection
-        base_qkv = self.qkv(x)  # (B, H, W, 3 * dim)
 
-        # LoRA adaptation for Q and V
+        base_qkv = self.qkv(x)
+
         dropped_x = self.dropout(x)
         delta_q = self.lora_b_q(self.lora_a_q(dropped_x)) * self.scaling
         delta_v = self.lora_b_v(self.lora_a_v(dropped_x)) * self.scaling
@@ -91,23 +69,16 @@ class LoRA_qkv(nn.Module):
 
 
 class PromptFreeTissueBottleneck(nn.Module):
-    """Eliminates the requirement for manual bounding boxes/points in SAM.
-
-    Injects learnable class-aware queries (e.g. for necrosis, normal, steatosis)
-    via cross-feature semantic modulation before decoder upsampling.
-    """
 
     def __init__(self, in_channels: int = 256, num_classes: int = 3):
         super().__init__()
         self.in_channels = in_channels
         self.num_classes = num_classes
 
-        # Learnable class embeddings for the target pathology categories
         self.class_embeddings = nn.Parameter(
             torch.randn(1, num_classes, in_channels) * 0.02
         )
 
-        # Channel cross-attention / modulation
         self.fc_q = nn.Linear(in_channels, in_channels)
         self.fc_k = nn.Linear(in_channels, in_channels)
         self.fc_v = nn.Linear(in_channels, in_channels)
@@ -118,34 +89,29 @@ class PromptFreeTissueBottleneck(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, H, W)
+
         B, C, H, W = x.shape
 
-        # Flatten spatial dimensions: (B, H*W, C)
         feat_flat = x.flatten(2).permute(0, 2, 1)
 
-        # Expand class tokens to batch size: (B, num_classes, C)
         class_tokens = self.class_embeddings.expand(B, -1, -1)
 
-        # Cross-attention: Spatial features query class tokens
-        q = self.fc_q(feat_flat)  # (B, H*W, C)
-        k = self.fc_k(class_tokens)  # (B, num_classes, C)
-        v = self.fc_v(class_tokens)  # (B, num_classes, C)
+        q = self.fc_q(feat_flat)
+        k = self.fc_k(class_tokens)
+        v = self.fc_v(class_tokens)
 
         scale = 1.0 / math.sqrt(C)
-        attn = torch.bmm(q, k.transpose(1, 2)) * scale  # (B, H*W, num_classes)
+        attn = torch.bmm(q, k.transpose(1, 2)) * scale
         attn = F.softmax(attn, dim=-1)
 
-        class_context = torch.bmm(attn, v)  # (B, H*W, C)
+        class_context = torch.bmm(attn, v)
         class_context = class_context.permute(0, 2, 1).view(B, C, H, W)
 
-        # Modulate spatial features with residual connection
         out = x + self.proj_out(class_context)
         return out
 
 
 class ResidualConvBlock(nn.Module):
-    """Double convolution residual block with GroupNorm for small batch sizes."""
 
     def __init__(self, channels: int, num_groups: int = 8):
         super().__init__()
@@ -163,13 +129,6 @@ class ResidualConvBlock(nn.Module):
 
 
 class CARAFESemanticDecoder(nn.Module):
-    """Morphology-Aware Semantic Decoder utilizing CARAFE upsampling.
-
-    Replaces SAM's standard low-resolution interactive decoder.
-    Progressively upsamples ViT features (64x64) back to full resolution (512x512)
-    using Content-Aware ReAssembly of FEatures (CARAFE) for superior boundary definition
-    on amorphous histology textures (necrosis, steatosis).
-    """
 
     def __init__(
         self,
@@ -181,7 +140,6 @@ class CARAFESemanticDecoder(nn.Module):
         super().__init__()
         self.num_classes = num_classes
 
-        # Stage 1: 64x64 -> 128x128 (256 -> 128)
         self.carafe1 = CARAFE(
             in_channels=in_channels,
             out_channels=128,
@@ -192,7 +150,6 @@ class CARAFESemanticDecoder(nn.Module):
         )
         self.res1 = ResidualConvBlock(128, num_groups=16)
 
-        # Stage 2: 128x128 -> 256x256 (128 -> 64)
         self.carafe2 = CARAFE(
             in_channels=128,
             out_channels=64,
@@ -203,7 +160,6 @@ class CARAFESemanticDecoder(nn.Module):
         )
         self.res2 = ResidualConvBlock(64, num_groups=8)
 
-        # Stage 3: 256x256 -> 512x512 (64 -> 32)
         self.carafe3 = CARAFE(
             in_channels=64,
             out_channels=32,
@@ -214,7 +170,6 @@ class CARAFESemanticDecoder(nn.Module):
         )
         self.res3 = ResidualConvBlock(32, num_groups=4)
 
-        # Semantic classification head
         self.seg_head = nn.Sequential(
             nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
             nn.GroupNorm(num_groups=4, num_channels=32),
@@ -248,21 +203,17 @@ class CARAFESemanticDecoder(nn.Module):
 
 
 class BilinearSemanticDecoder(nn.Module):
-    """Standard Bilinear Interpolation Decoder (Baseline SAM / SAMed)."""
 
     def __init__(self, in_channels: int = 256, num_classes: int = 3):
         super().__init__()
         self.num_classes = num_classes
 
-        # Stage 1: 64x64 -> 128x128
         self.conv1 = nn.Conv2d(in_channels, 128, kernel_size=3, padding=1, bias=False)
         self.res1 = ResidualConvBlock(128, num_groups=16)
 
-        # Stage 2: 128x128 -> 256x256
         self.conv2 = nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False)
         self.res2 = ResidualConvBlock(64, num_groups=8)
 
-        # Stage 3: 256x256 -> 512x512
         self.conv3 = nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False)
         self.res3 = ResidualConvBlock(32, num_groups=4)
 
@@ -297,7 +248,6 @@ class BilinearSemanticDecoder(nn.Module):
 
 
 class NearestSemanticDecoder(nn.Module):
-    """Nearest Neighbor Interpolation Decoder."""
 
     def __init__(self, in_channels: int = 256, num_classes: int = 3):
         super().__init__()
@@ -343,7 +293,6 @@ class NearestSemanticDecoder(nn.Module):
 
 
 class ConvTransposeSemanticDecoder(nn.Module):
-    """Transposed Convolution (Deconvolution) Decoder."""
 
     def __init__(self, in_channels: int = 256, num_classes: int = 3):
         super().__init__()
@@ -384,23 +333,21 @@ class ConvTransposeSemanticDecoder(nn.Module):
 
 
 class PixelShuffleSemanticDecoder(nn.Module):
-    """Sub-Pixel Convolution (PixelShuffle) Decoder."""
 
     def __init__(self, in_channels: int = 256, num_classes: int = 3):
         super().__init__()
         self.num_classes = num_classes
 
-        # Stage 1: 256 -> 128*4 -> PixelShuffle(2) -> 128
-        self.conv1 = nn.Conv2d(in_channels, 128 * 4, kernel_size=3, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(
+            in_channels, 128 * 4, kernel_size=3, padding=1, bias=False
+        )
         self.ps1 = nn.PixelShuffle(2)
         self.res1 = ResidualConvBlock(128, num_groups=16)
 
-        # Stage 2: 128 -> 64*4 -> PixelShuffle(2) -> 64
         self.conv2 = nn.Conv2d(128, 64 * 4, kernel_size=3, padding=1, bias=False)
         self.ps2 = nn.PixelShuffle(2)
         self.res2 = ResidualConvBlock(64, num_groups=8)
 
-        # Stage 3: 64 -> 32*4 -> PixelShuffle(2) -> 32
         self.conv3 = nn.Conv2d(64, 32 * 4, kernel_size=3, padding=1, bias=False)
         self.ps3 = nn.PixelShuffle(2)
         self.res3 = ResidualConvBlock(32, num_groups=4)
@@ -435,7 +382,7 @@ def build_semantic_decoder(
     in_channels: int = 256,
     num_classes: int = 3,
 ) -> nn.Module:
-    """Factory function for instantiating the requested decoder architecture."""
+
     dtype = decoder_type.lower()
     if dtype == "carafe":
         return CARAFESemanticDecoder(in_channels=in_channels, num_classes=num_classes)
@@ -444,9 +391,13 @@ def build_semantic_decoder(
     elif dtype == "nearest":
         return NearestSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
     elif dtype in ("conv_transpose", "deconv"):
-        return ConvTransposeSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+        return ConvTransposeSemanticDecoder(
+            in_channels=in_channels, num_classes=num_classes
+        )
     elif dtype in ("pixel_shuffle", "pixelshuffle", "subpixel"):
-        return PixelShuffleSemanticDecoder(in_channels=in_channels, num_classes=num_classes)
+        return PixelShuffleSemanticDecoder(
+            in_channels=in_channels, num_classes=num_classes
+        )
     else:
         raise ValueError(
             f"Unknown decoder_type: {decoder_type}. Supported: 'carafe', 'bilinear', 'nearest', 'conv_transpose', 'pixel_shuffle'"
@@ -454,14 +405,6 @@ def build_semantic_decoder(
 
 
 class HistoSAM_LoRA(nn.Module):
-    """Complete HistoSAM-LoRA Architecture for Hepatic Pathology.
-
-    Integrates:
-    1. Pretrained MedSAM Vision Transformer (ViT-Base) [FROZEN]
-    2. LoRA injected attention projections [TRAINABLE]
-    3. Prompt-Free Tissue Class Bottleneck [TRAINABLE]
-    4. Morphology-Aware CARAFE Semantic Decoder [TRAINABLE]
-    """
 
     def __init__(
         self,
@@ -478,20 +421,16 @@ class HistoSAM_LoRA(nn.Module):
         self.lora_alpha = lora_alpha
         self.decoder_type = decoder_type
 
-        # 1. Initialize MedSAM ViT-B
         sam = sam_model_registry["vit_b"](checkpoint=checkpoint_path)
         self.image_encoder = sam.image_encoder
 
-        # Free memory: prompt_encoder and mask_decoder are not needed
         del sam.prompt_encoder
         del sam.mask_decoder
         del sam
 
-        # 2. Freeze the entire MedSAM ViT encoder
         for param in self.image_encoder.parameters():
             param.requires_grad = False
 
-        # 3. Inject LoRA into all attention blocks (if r > 0; if r=0 encoder remains 100% frozen)
         self.lora_layers: List[LoRA_qkv] = []
         if self.r > 0:
             for block in self.image_encoder.blocks:
@@ -505,12 +444,10 @@ class HistoSAM_LoRA(nn.Module):
                 block.attn.qkv = lora_module
                 self.lora_layers.append(lora_module)
 
-        # 4. Prompt-Free Bottleneck
         self.bottleneck = PromptFreeTissueBottleneck(
             in_channels=256, num_classes=num_classes
         )
 
-        # 5. Semantic Decoder (CARAFE, Bilinear, Nearest, ConvTranspose, or PixelShuffle)
         self.decoder = build_semantic_decoder(
             decoder_type=decoder_type,
             in_channels=256,
@@ -518,18 +455,9 @@ class HistoSAM_LoRA(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
 
-        Args:
-            x: Input RGB tensor of shape (B, 3, H, W), typically normalized [0, 1].
-
-        Returns:
-            Logits tensor of shape (B, num_classes, H, W).
-        """
         B, _, H, W = x.shape
 
-        # MedSAM ViT expects 1024x1024 resolution.
-        # If patch size is 512x512, interpolate to 1024x1024 for the encoder pass.
         if H != 1024 or W != 1024:
             x_encoder = F.interpolate(
                 x, size=(1024, 1024), mode="bilinear", align_corners=False
@@ -537,23 +465,20 @@ class HistoSAM_LoRA(nn.Module):
         else:
             x_encoder = x
 
-        # ViT Encoder Feature Extraction
-        features = self.image_encoder(x_encoder)  # (B, 256, 64, 64)
+        features = self.image_encoder(x_encoder)
 
-        # Prompt-Free Class Bottleneck Modulation
-        features = self.bottleneck(features)  # (B, 256, 64, 64)
+        features = self.bottleneck(features)
 
-        # Upsampling to target patch resolution
-        logits = self.decoder(features, target_size=(H, W))  # (B, num_classes, H, W)
+        logits = self.decoder(features, target_size=(H, W))
 
         return logits
 
     def get_trainable_parameters(self) -> List[nn.Parameter]:
-        """Returns all parameters with requires_grad=True."""
+
         return [p for p in self.parameters() if p.requires_grad]
 
     def parameter_statistics(self) -> Dict[str, int]:
-        """Calculates total, trainable, and frozen parameter counts."""
+
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         frozen_params = total_params - trainable_params
@@ -567,28 +492,34 @@ class HistoSAM_LoRA(nn.Module):
         }
 
     def print_parameter_summary(self):
-        """Prints a clean summary of model parameters."""
+
         stats = self.parameter_statistics()
         print("=" * 60)
         print(f" HistoSAM (r={self.r}, decoder={self.decoder_type}) Parameter Summary")
         print("=" * 60)
         print(f" Total Parameters      : {stats['total']:,}")
-        print(f" Frozen Parameters     : {stats['frozen']:,} ({100 - stats['trainable_percent']:.2f}%)")
-        print(f" Trainable Parameters  : {stats['trainable']:,} ({stats['trainable_percent']:.2f}%)")
+        print(
+            f" Frozen Parameters     : {stats['frozen']:,} ({100 - stats['trainable_percent']:.2f}%)"
+        )
+        print(
+            f" Trainable Parameters  : {stats['trainable']:,} ({stats['trainable_percent']:.2f}%)"
+        )
         print("=" * 60)
 
     def save_trainable_weights(self, save_path: str):
-        """Saves ONLY trainable parameters (LoRA + Bottleneck + Decoder)."""
+
         trainable_state = {}
         for k, v in self.state_dict().items():
             if any(name in k for name in ["lora_", "bottleneck", "decoder"]):
                 trainable_state[k] = v.cpu()
 
         torch.save(trainable_state, save_path)
-        print(f"[INFO] Saved trainable weights ({len(trainable_state)} tensors) to {save_path}")
+        print(
+            f"[INFO] Saved trainable weights ({len(trainable_state)} tensors) to {save_path}"
+        )
 
     def load_trainable_weights(self, load_path: str, strict: bool = False):
-        """Loads previously trained LoRA and Decoder weights."""
+
         state_dict = torch.load(load_path, map_location="cpu")
         msg = self.load_state_dict(state_dict, strict=strict)
         print(f"[INFO] Loaded trainable weights from {load_path}: {msg}")
@@ -600,8 +531,7 @@ def build_histo_sam_lora(
     lora_rank: int = 8,
     decoder_type: str = "carafe",
 ) -> HistoSAM_LoRA:
-    """Convenience builder function for HistoSAM-LoRA architecture."""
-    # Check default MedSAM weights location if not specified
+
     if checkpoint_path is None:
         default_p = Path(__file__).resolve().parent / "MedSAM" / "medsam_vit_b.pth"
         if default_p.exists():

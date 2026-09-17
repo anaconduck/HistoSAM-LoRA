@@ -1,11 +1,3 @@
-"""U-Net baseline for multi-class tissue segmentation (Q1 Benchmark Comparator).
-
-Allows fair benchmark comparison against HistoSAM-LoRA using the exact same:
-- Patient-Level Stratified K-Fold splits (split_rX_fY.json)
-- Multi-class evaluation metrics (mIoU, mDice, HD95, ASD)
-- Zero-augmentation protocol
-"""
-
 import sys
 import json
 import argparse
@@ -44,7 +36,6 @@ class DoubleConv(nn.Module):
 
 
 class UNet(nn.Module):
-    """Standard U-Net architecture (Ronneberger et al., MICCAI 2015)."""
 
     def __init__(self, n_channels: int = 3, n_classes: int = 3):
         super().__init__()
@@ -95,7 +86,6 @@ class UNet(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    """Attention Gate for Attention U-Net (Oktay et al., 2018)."""
 
     def __init__(self, f_g: int, f_l: int, f_int: int):
         super().__init__()
@@ -123,7 +113,6 @@ class AttentionBlock(nn.Module):
 
 
 class AttentionUNet(nn.Module):
-    """Attention U-Net architecture (Oktay et al., 2018)."""
 
     def __init__(self, n_channels: int = 3, n_classes: int = 3):
         super().__init__()
@@ -230,7 +219,6 @@ def train_unet_baseline(
 
         scheduler.step()
 
-        # Validation
         model.eval()
         meter = SegmentationMetricsMeter(num_classes=3)
         with torch.no_grad():
@@ -249,21 +237,37 @@ def train_unet_baseline(
 
         if metrics["mDice"] > best_dice:
             best_dice = metrics["mDice"]
-            save_file = out_path / f"{model_type.lower()}_baseline_{split_stem}_best.pth"
+            save_file = (
+                out_path / f"{model_type.lower()}_baseline_{split_stem}_best.pth"
+            )
             torch.save(model.state_dict(), str(save_file))
-            print(f"  --> Saved best {model_type} model ({best_dice*100:.2f}%) to {save_file.name}")
+            print(
+                f"  --> Saved best {model_type} model ({best_dice*100:.2f}%) to {save_file.name}"
+            )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train U-Net / Attention U-Net baseline on histopathology")
-    parser.add_argument("--split_file", type=str, required=True, help="Path to split JSON file")
-    parser.add_argument("--model", type=str, default="unet", choices=["unet", "attention_unet"], help="Model architecture")
+    parser = argparse.ArgumentParser(
+        description="Train U-Net / Attention U-Net baseline on histopathology"
+    )
+    parser.add_argument(
+        "--split_file", type=str, required=True, help="Path to split JSON file"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="unet",
+        choices=["unet", "attention_unet"],
+        help="Model architecture",
+    )
     parser.add_argument("--data_dir", type=str, default="data/liver_primary/processed")
     parser.add_argument("--output_dir", type=str, default="results/checkpoints")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
 
     args = parser.parse_args()
     train_unet_baseline(

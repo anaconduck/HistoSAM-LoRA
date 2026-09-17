@@ -1,17 +1,3 @@
-"""Public Liver Histopathology Pre-training Data Downloader and Organizer.
-
-Supported Public Datasets:
-1. HEPASS (HEPatic Adaptive Steatosis Segmentation) - Salvi et al., 2020 (Mendeley Data)
-   - 385 liver donor H&E images with steatosis ground truth.
-2. KMC Liver Histopathology Dataset - Manipal / Mendeley Data
-   - 80 multi-class liver histology slides annotated by certified pathologists.
-
-Standardizes annotations to 3-Class Taxonomy:
-- Class 0: Background / Normal Parenchyma
-- Class 1: Steatosis (Macro/Microvesicular lipid droplets)
-- Class 2: Necrosis / Inflammatory Infiltrates
-"""
-
 import argparse
 import json
 import os
@@ -31,29 +17,40 @@ def setup_public_directories() -> tuple[Path, Path]:
     hepass_dir = PUBLIC_DIR / "hepass"
     kmc_dir = PUBLIC_DIR / "kmc_liver"
 
-    for d in [hepass_dir / "images", hepass_dir / "masks", kmc_dir / "images", kmc_dir / "masks"]:
+    for d in [
+        hepass_dir / "images",
+        hepass_dir / "masks",
+        kmc_dir / "images",
+        kmc_dir / "masks",
+    ]:
         d.mkdir(parents=True, exist_ok=True)
 
     return hepass_dir, kmc_dir
 
 
 def create_synthetic_pretrain_data(num_samples: int = 16, patch_size: int = 512):
-    """Generates synthetic H&E liver samples with realistic 3-class tissue patterns for offline dry-run."""
+
     hepass_dir, kmc_dir = setup_public_directories()
-    print(f"[INFO] Generating {num_samples} synthetic pre-training pairs for offline validation...")
+    print(
+        f"[INFO] Generating {num_samples} synthetic pre-training pairs for offline validation..."
+    )
 
     for i in range(num_samples):
-        # Generate pseudo H&E image (Pink/Purple eosin/hematoxylin hues)
-        h_e_base = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
-        # Eosin pink background
-        h_e_base[:, :, 0] = np.random.randint(180, 225, (patch_size, patch_size), dtype=np.uint8)
-        h_e_base[:, :, 1] = np.random.randint(120, 160, (patch_size, patch_size), dtype=np.uint8)
-        h_e_base[:, :, 2] = np.random.randint(170, 210, (patch_size, patch_size), dtype=np.uint8)
 
-        # Ground truth mask (0: Normal, 1: Steatosis, 2: Necrosis)
+        h_e_base = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
+
+        h_e_base[:, :, 0] = np.random.randint(
+            180, 225, (patch_size, patch_size), dtype=np.uint8
+        )
+        h_e_base[:, :, 1] = np.random.randint(
+            120, 160, (patch_size, patch_size), dtype=np.uint8
+        )
+        h_e_base[:, :, 2] = np.random.randint(
+            170, 210, (patch_size, patch_size), dtype=np.uint8
+        )
+
         mask = np.zeros((patch_size, patch_size), dtype=np.uint8)
 
-        # Simulate Steatosis (Class 1): round clear circular lipid droplets
         num_droplets = np.random.randint(5, 15)
         for _ in range(num_droplets):
             cx = np.random.randint(40, patch_size - 40)
@@ -63,10 +60,9 @@ def create_synthetic_pretrain_data(num_samples: int = 16, patch_size: int = 512)
             dist_from_center = (x - cx) ** 2 + (y - cy) ** 2
             circle_mask = dist_from_center <= r**2
             mask[circle_mask] = 1
-            # Steatosis droplets in H&E look clear/white
+
             h_e_base[circle_mask] = np.random.randint(240, 255, (3,), dtype=np.uint8)
 
-        # Simulate Necrosis / Inflammation (Class 2): irregular dense dark-purple pyknotic zones
         if np.random.rand() > 0.4:
             nx = np.random.randint(60, patch_size - 60)
             ny = np.random.randint(60, patch_size - 60)
@@ -75,7 +71,7 @@ def create_synthetic_pretrain_data(num_samples: int = 16, patch_size: int = 512)
             dist = (x - nx) ** 2 + (y - ny) ** 2
             necr_mask = (dist <= nr**2) & (mask != 1)
             mask[necr_mask] = 2
-            # Dark purple pyknotic chromatin fragments
+
             h_e_base[necr_mask, 0] = np.random.randint(90, 130, dtype=np.uint8)
             h_e_base[necr_mask, 1] = np.random.randint(40, 80, dtype=np.uint8)
             h_e_base[necr_mask, 2] = np.random.randint(110, 160, dtype=np.uint8)
@@ -91,7 +87,7 @@ def create_synthetic_pretrain_data(num_samples: int = 16, patch_size: int = 512)
 
 
 def download_mendeley_hepass():
-    """Instructions and automated downloader for HEPASS Mendeley Data."""
+
     hepass_dir, _ = setup_public_directories()
     info_file = hepass_dir / "README.md"
     content = """# HEPASS Dataset Instructions
@@ -110,9 +106,20 @@ To import real HEPASS files:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Public Liver Pre-training Data Downloader")
-    parser.add_argument("--synthetic-demo", action="store_true", help="Generate synthetic pre-training dataset for local dry-run")
-    parser.add_argument("--num-samples", type=int, default=16, help="Number of synthetic pairs to generate")
+    parser = argparse.ArgumentParser(
+        description="Public Liver Pre-training Data Downloader"
+    )
+    parser.add_argument(
+        "--synthetic-demo",
+        action="store_true",
+        help="Generate synthetic pre-training dataset for local dry-run",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=16,
+        help="Number of synthetic pairs to generate",
+    )
     args = parser.parse_args()
 
     setup_public_directories()

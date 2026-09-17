@@ -1,9 +1,3 @@
-"""Tiling and annotation extraction for histopathology slides (MedSAM semantic segmentation).
-
-Supports QuPath GeoJSON exports and tiles slides into 512x512 patches with semantic masks.
-Uses pure Pillow and NumPy (no OpenCV or Shapely dependencies required).
-"""
-
 import os
 import sys
 import json
@@ -16,7 +10,6 @@ from PIL import Image, ImageDraw
 from tqdm import tqdm
 
 from stain_norm import MacenkoNormalizer
-
 
 CLASS_MAP = {
     "necrosis": 0,
@@ -35,8 +28,7 @@ CLASS_MAP = {
 def is_background_patch(
     patch_rgb: np.ndarray, bg_threshold: float = 220.0, max_bg_ratio: float = 0.85
 ) -> bool:
-    """Detects if a patch is mostly glass slide background."""
-    # Fast luminance calculation: 0.299 R + 0.587 G + 0.114 B
+
     gray = (
         0.299 * patch_rgb[:, :, 0]
         + 0.587 * patch_rgb[:, :, 1]
@@ -46,8 +38,10 @@ def is_background_patch(
     return bg_ratio > max_bg_ratio
 
 
-def parse_qupath_geojson(geojson_path: str) -> List[Tuple[List[Tuple[float, float]], int]]:
-    """Extracts polygons and class labels from a QuPath GeoJSON export."""
+def parse_qupath_geojson(
+    geojson_path: str,
+) -> List[Tuple[List[Tuple[float, float]], int]]:
+
     with open(geojson_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -92,7 +86,7 @@ def parse_qupath_geojson(geojson_path: str) -> List[Tuple[List[Tuple[float, floa
 def polygon_overlaps_box(
     poly_pts: List[Tuple[float, float]], x0: int, y0: int, x1: int, y1: int
 ) -> bool:
-    """Checks if polygon bounding box intersects the patch box."""
+
     xs = [p[0] for p in poly_pts]
     ys = [p[1] for p in poly_pts]
     min_x, max_x = min(xs), max(xs)
@@ -137,28 +131,26 @@ def tile_image_and_annotations(
             if normalize_stain and normalizer is not None:
                 patch_rgb = normalizer.transform(patch_rgb)
 
-            # Initialize semantic mask with ignore_index (255)
             mask_pil = Image.new("L", (patch_size, patch_size), color=ignore_index)
             draw = ImageDraw.Draw(mask_pil)
 
             has_annotation = False
             for poly_pts, cls_idx in polygons_with_class:
-                if not polygon_overlaps_box(poly_pts, x, y, x + patch_size, y + patch_size):
+                if not polygon_overlaps_box(
+                    poly_pts, x, y, x + patch_size, y + patch_size
+                ):
                     continue
 
                 local_pts = [(p[0] - x, p[1] - y) for p in poly_pts]
                 draw.polygon(local_pts, fill=int(cls_idx))
                 has_annotation = True
 
-            # Save patch if it contains any pathology annotation
             if has_annotation:
                 patch_filename = f"{base_name}_x{x}_y{y}.png"
 
-                # Save RGB patch
                 patch_img_out = output_img_dir / patch_filename
                 Image.fromarray(patch_rgb).save(str(patch_img_out))
 
-                # Save 8-bit single-channel label mask
                 patch_lbl_out = output_lbl_dir / patch_filename
                 mask_pil.save(str(patch_lbl_out))
 
@@ -238,7 +230,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--patch_size", type=int, default=512, help="Patch size")
     parser.add_argument(
-        "--no_stain_norm", action="store_true", help="Disable Macenko stain normalization"
+        "--no_stain_norm",
+        action="store_true",
+        help="Disable Macenko stain normalization",
     )
 
     args = parser.parse_args()

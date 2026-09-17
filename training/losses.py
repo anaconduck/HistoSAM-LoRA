@@ -1,14 +1,3 @@
-"""Boundary-Aware Joint Focal-Dice Loss for Amorphous Tissue Segmentation.
-
-Formulation:
-    L_joint = lambda_focal * L_focal + lambda_dice * L_dice + lambda_boundary * L_boundary
-
-Designed for:
-- Extreme class imbalance between normal parenchyma, necrosis, and steatosis.
-- Unclear/amorphous boundaries typical of hepatic necrotic zones.
-- Support for ignore_index (e.g. glass slide background: 255).
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,7 +5,6 @@ from typing import Optional, List
 
 
 class MultiClassFocalLoss(nn.Module):
-    """Multi-Class Focal Loss with optional class weighting and gamma focusing."""
 
     def __init__(
         self,
@@ -32,12 +20,7 @@ class MultiClassFocalLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            logits: (B, C, H, W)
-            targets: (B, H, W) with class indices [0, C-1] or ignore_index
-        """
-        # Cross entropy with reduction='none'
+
         ce_loss = F.cross_entropy(
             logits,
             targets,
@@ -46,10 +29,8 @@ class MultiClassFocalLoss(nn.Module):
             reduction="none",
         )
 
-        # Probabilities
         pt = torch.exp(-ce_loss)
 
-        # Focal term
         focal_loss = ((1.0 - pt) ** self.gamma) * ce_loss
 
         if self.reduction == "mean":
@@ -63,7 +44,6 @@ class MultiClassFocalLoss(nn.Module):
 
 
 class MultiClassDiceLoss(nn.Module):
-    """Multi-Class Soft Dice Loss with smooth term and ignore_index support."""
 
     def __init__(
         self,
@@ -75,61 +55,60 @@ class MultiClassDiceLoss(nn.Module):
         self.ignore_index = ignore_index
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            logits: (B, C, H, W)
-            targets: (B, H, W) with class indices
-        """
+
         num_classes = logits.shape[1]
-        probs = F.softmax(logits, dim=1)  # (B, C, H, W)
+        probs = F.softmax(logits, dim=1)
 
-        # Create valid mask excluding ignore_index
-        valid_mask = targets != self.ignore_index  # (B, H, W)
+        valid_mask = targets != self.ignore_index
 
-        # One-hot encode targets
         targets_clamped = targets.clone()
         targets_clamped[~valid_mask] = 0
-        one_hot = F.one_hot(targets_clamped, num_classes=num_classes)  # (B, H, W, C)
-        one_hot = one_hot.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+        one_hot = F.one_hot(targets_clamped, num_classes=num_classes)
+        one_hot = one_hot.permute(0, 3, 1, 2).float()
 
-        # Apply valid mask
         valid_mask_expanded = valid_mask.unsqueeze(1).expand_as(probs)
         probs = probs * valid_mask_expanded
         one_hot = one_hot * valid_mask_expanded
 
-        # Compute Dice per class
         dims = (0, 2, 3)
         intersection = torch.sum(probs * one_hot, dim=dims)
         cardinality = torch.sum(probs + one_hot, dim=dims)
 
-        dice_per_class = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
+        dice_per_class = (2.0 * intersection + self.smooth) / (
+            cardinality + self.smooth
+        )
         dice_loss = 1.0 - dice_per_class.mean()
 
         return dice_loss
 
 
 class BoundaryLaplacianLoss(nn.Module):
-    """Penalizes errors near amorphous tissue boundaries using Laplacian contours."""
 
     def __init__(self, kernel_size: int = 3):
         super().__init__()
-        laplacian_kernel = torch.tensor(
-            [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
-            dtype=torch.float32,
-        ).unsqueeze(0).unsqueeze(0)
+        laplacian_kernel = (
+            torch.tensor(
+                [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+                dtype=torch.float32,
+            )
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
         self.register_buffer("kernel", laplacian_kernel)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Computes boundary distance / contour alignment loss."""
+
         num_classes = logits.shape[1]
         probs = F.softmax(logits, dim=1)
 
-        # Safe one-hot encoding
         targets_clean = targets.clone()
         targets_clean[targets == 255] = 0
-        one_hot = F.one_hot(targets_clean, num_classes=num_classes).permute(0, 3, 1, 2).float()
+        one_hot = (
+            F.one_hot(targets_clean, num_classes=num_classes)
+            .permute(0, 3, 1, 2)
+            .float()
+        )
 
-        # Compute Laplacian edge maps for targets and probabilities
         B, C, H, W = probs.shape
         kernel = self.kernel.to(logits.device).repeat(C, 1, 1, 1)
 
@@ -140,10 +119,6 @@ class BoundaryLaplacianLoss(nn.Module):
 
 
 class BoundaryAwareJointLoss(nn.Module):
-    """Unified loss combining Focal, Dice, and Boundary Laplacian penalties.
-
-    L_total = lambda_focal * L_focal + lambda_dice * L_dice + lambda_boundary * L_boundary
-    """
 
     def __init__(
         self,
@@ -188,11 +163,6 @@ class BoundaryAwareJointLoss(nn.Module):
 
 
 class ConfidenceWeightedLoss(nn.Module):
-    """Loss for Iterative Self-Training with confidence masking and curriculum thresholding.
-
-    Penalizes model predictions against pseudo-labels only for pixels with confidence >= threshold,
-    preventing confirmation bias and noise propagation during semi-supervised learning.
-    """
 
     def __init__(
         self,
@@ -215,24 +185,21 @@ class ConfidenceWeightedLoss(nn.Module):
         pseudo_targets: torch.Tensor,
         confidence_map: torch.Tensor,
     ) -> tuple[torch.Tensor, dict]:
-        """
-        Args:
-            logits: (B, C, H, W)
-            pseudo_targets: (B, H, W)
-            confidence_map: (B, H, W) with confidence in [0, 1]
-        """
+
         num_classes = logits.shape[1]
         probs = F.softmax(logits, dim=1)
 
-        # Base cross-entropy per pixel
-        ce_pixel = F.cross_entropy(logits, pseudo_targets, ignore_index=self.ignore_index, reduction="none")
+        ce_pixel = F.cross_entropy(
+            logits, pseudo_targets, ignore_index=self.ignore_index, reduction="none"
+        )
 
-        # Confidence mask
-        confident_mask = (confidence_map >= self.threshold) & (pseudo_targets != self.ignore_index)
+        confident_mask = (confidence_map >= self.threshold) & (
+            pseudo_targets != self.ignore_index
+        )
         num_confident = confident_mask.sum().float()
 
         if num_confident == 0:
-            # Fallback if no pixel meets threshold (rare edge case)
+
             loss_ce = ce_pixel.mean() * 0.0
         else:
             if self.soft_weighting:
@@ -241,8 +208,9 @@ class ConfidenceWeightedLoss(nn.Module):
             else:
                 loss_ce = ce_pixel[confident_mask].mean()
 
-        # Confident Dice Loss
-        one_hot = F.one_hot(pseudo_targets.clamp(0, num_classes - 1), num_classes=num_classes)
+        one_hot = F.one_hot(
+            pseudo_targets.clamp(0, num_classes - 1), num_classes=num_classes
+        )
         one_hot = one_hot.permute(0, 3, 1, 2).float()
 
         mask_4d = confident_mask.unsqueeze(1).expand_as(probs)
@@ -269,7 +237,7 @@ if __name__ == "__main__":
     B, C, H, W = 2, 3, 128, 128
     logits = torch.randn(B, C, H, W, requires_grad=True)
     targets = torch.randint(0, C, (B, H, W))
-    targets[0, 0:10, 0:10] = 255  # test ignore_index
+    targets[0, 0:10, 0:10] = 255
 
     criterion = BoundaryAwareJointLoss()
     loss, details = criterion(logits, targets)
@@ -278,7 +246,6 @@ if __name__ == "__main__":
     print("[SUCCESS] Joint loss computed:", details)
     print("[SUCCESS] Gradients passed back successfully!")
 
-    # Test ConfidenceWeightedLoss
     conf = torch.rand(B, H, W)
     self_crit = ConfidenceWeightedLoss(threshold=0.8)
     s_loss, s_details = self_crit(logits, targets, conf)

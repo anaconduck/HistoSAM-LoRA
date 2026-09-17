@@ -1,12 +1,3 @@
-"""Clinical Segmentation Visualization and Overlay Generator.
-
-Produces presentation-ready composite images with:
-1. Side-by-side display: Original H&E Tissue vs. Semi-transparent Color-Coded Overlay.
-2. Contours for amorphous necrotic boundaries and circular lipid droplets.
-3. Quantitative tissue composition legend (% Steatosis, % Necrosis, % Normal).
-4. Exported directly as PNGs to results/visualizations/ to be sent to pathologists.
-"""
-
 import argparse
 from pathlib import Path
 from typing import Optional, Tuple, Dict
@@ -14,12 +5,10 @@ from typing import Optional, Tuple, Dict
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-
-# Clinical Standard Color Palette (RGB)
 CLASS_COLORS = {
-    0: (46, 204, 113),   # Normal Parenchyma: Emerald Green
-    1: (241, 196, 15),   # Steatosis (Lipid Droplets): Sunflower Yellow / Amber
-    2: (231, 76, 60),    # Necrosis / Infiltration: Crimson Red
+    0: (46, 204, 113),
+    1: (241, 196, 15),
+    2: (231, 76, 60),
 }
 
 CLASS_NAMES = {
@@ -29,8 +18,10 @@ CLASS_NAMES = {
 }
 
 
-def create_colored_mask(mask: np.ndarray, alpha: float = 0.45) -> Tuple[Image.Image, Dict[int, float]]:
-    """Creates an RGBA colored overlay mask and calculates area percentages."""
+def create_colored_mask(
+    mask: np.ndarray, alpha: float = 0.45
+) -> Tuple[Image.Image, Dict[int, float]]:
+
     h, w = mask.shape
     rgba_img = np.zeros((h, w, 4), dtype=np.uint8)
 
@@ -38,12 +29,12 @@ def create_colored_mask(mask: np.ndarray, alpha: float = 0.45) -> Tuple[Image.Im
     percentages = {}
 
     for cls_idx, color in CLASS_COLORS.items():
-        cls_mask = (mask == cls_idx)
+        cls_mask = mask == cls_idx
         count = int(cls_mask.sum())
         percentages[cls_idx] = (count / total_pixels) * 100.0
 
         if cls_idx == 0:
-            # Subtle low-alpha for normal background
+
             rgba_img[cls_mask] = (*color, int(alpha * 255 * 0.3))
         else:
             rgba_img[cls_mask] = (*color, int(alpha * 255))
@@ -58,7 +49,7 @@ def generate_clinical_composite(
     alpha: float = 0.45,
     panel_size: int = 512,
 ):
-    """Generates a high-resolution side-by-side composite comparison image."""
+
     img_p = Path(image_path)
     out_p = Path(output_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
@@ -66,44 +57,41 @@ def generate_clinical_composite(
     resample_bilinear = getattr(Image, "Resampling", Image).BILINEAR
     resample_nearest = getattr(Image, "Resampling", Image).NEAREST
 
-    # 1. Load and resize original image
     raw_pil = Image.open(str(img_p)).convert("RGB")
     raw_resized = raw_pil.resize((panel_size, panel_size), resample_bilinear)
 
-    # 2. Resize mask if necessary
     if mask.shape != (panel_size, panel_size):
         pil_m = Image.fromarray(mask.astype(np.uint8))
         pil_m = pil_m.resize((panel_size, panel_size), resample_nearest)
         mask = np.array(pil_m)
 
-    # 3. Create color overlay
     colored_overlay, percentages = create_colored_mask(mask, alpha=alpha)
 
-    # Blend original and colored overlay
     blended = raw_resized.copy().convert("RGBA")
     blended.alpha_composite(colored_overlay)
     blended_rgb = blended.convert("RGB")
 
-    # 4. Create composite canvas (Width = 2 * panel_size, Height = panel_size + header/legend 90px)
     header_h = 70
     canvas_w = panel_size * 2 + 30
     canvas_h = panel_size + header_h + 50
     canvas = Image.new("RGB", (canvas_w, canvas_h), color=(25, 28, 36))
     draw = ImageDraw.Draw(canvas)
 
-    # Paste panels
     canvas.paste(raw_resized, (10, header_h))
     canvas.paste(blended_rgb, (panel_size + 20, header_h))
 
-    # Draw titles
     draw.text((15, 12), f"Original H&E: {img_p.name}", fill=(240, 240, 240))
-    draw.text((panel_size + 25, 12), "HistoSAM-LoRA Semantic Segmentation", fill=(240, 240, 240))
+    draw.text(
+        (panel_size + 25, 12),
+        "HistoSAM-LoRA Semantic Segmentation",
+        fill=(240, 240, 240),
+    )
 
-    # Draw labels and percentages below
     draw.text((15, header_h - 22), "Source Tissue", fill=(180, 180, 180))
-    draw.text((panel_size + 25, header_h - 22), "Diagnostic Overlay", fill=(180, 180, 180))
+    draw.text(
+        (panel_size + 25, header_h - 22), "Diagnostic Overlay", fill=(180, 180, 180)
+    )
 
-    # Bottom Legend
     legend_y = canvas_h - 40
     curr_x = 20
     for cls_idx in [1, 2, 0]:
@@ -111,9 +99,14 @@ def generate_clinical_composite(
         name = CLASS_NAMES[cls_idx]
         pct = percentages[cls_idx]
 
-        # Draw color box
-        draw.rectangle([curr_x, legend_y, curr_x + 18, legend_y + 18], fill=color, outline=(255, 255, 255))
-        draw.text((curr_x + 26, legend_y + 2), f"{name}: {pct:.1f}%", fill=(230, 230, 230))
+        draw.rectangle(
+            [curr_x, legend_y, curr_x + 18, legend_y + 18],
+            fill=color,
+            outline=(255, 255, 255),
+        )
+        draw.text(
+            (curr_x + 26, legend_y + 2), f"{name}: {pct:.1f}%", fill=(230, 230, 230)
+        )
         curr_x += 280
 
     canvas.save(str(out_p), quality=95)
@@ -125,18 +118,22 @@ def batch_visualize_predictions(
     output_dir: Path | str,
     magnification: Optional[str] = None,
 ):
-    """Processes all images and masks in batch to prepare delivery for pathologists."""
+
     raw_p = Path(raw_image_dir)
     pred_p = Path(predictions_dir)
     out_p = Path(output_dir)
     out_p.mkdir(parents=True, exist_ok=True)
 
-    images = sorted(list(raw_p.glob("*.tif")) + list(raw_p.glob("*.tiff")) + list(raw_p.glob("*.png")))
+    images = sorted(
+        list(raw_p.glob("*.tif"))
+        + list(raw_p.glob("*.tiff"))
+        + list(raw_p.glob("*.png"))
+    )
     count = 0
 
     for img in images:
         stem = img.stem
-        # Try finding prediction (.npy or .png)
+
         npy_pred = pred_p / f"{stem}_mask.npy"
         png_pred = pred_p / f"{stem}_pseudolabel.png"
 
@@ -157,17 +154,27 @@ def batch_visualize_predictions(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Clinical Visualization Generator")
     parser.add_argument("--image", type=str, required=False, help="Single image path")
-    parser.add_argument("--mask", type=str, required=False, help="Single mask path (.npy or .png)")
-    parser.add_argument("--output", type=str, default="results/visualizations/sample_overlay.png")
+    parser.add_argument(
+        "--mask", type=str, required=False, help="Single mask path (.npy or .png)"
+    )
+    parser.add_argument(
+        "--output", type=str, default="results/visualizations/sample_overlay.png"
+    )
     args = parser.parse_args()
 
     if args.image and args.mask:
-        m = np.load(args.mask) if args.mask.endswith(".npy") else np.array(Image.open(args.mask))
+        m = (
+            np.load(args.mask)
+            if args.mask.endswith(".npy")
+            else np.array(Image.open(args.mask))
+        )
         generate_clinical_composite(args.image, m, args.output)
         print(f"[SUCCESS] Saved visualization to {args.output}")
     else:
-        # Self-test with synthetic data
-        dummy_img = Image.fromarray(np.random.randint(150, 240, (512, 512, 3), dtype=np.uint8))
+
+        dummy_img = Image.fromarray(
+            np.random.randint(150, 240, (512, 512, 3), dtype=np.uint8)
+        )
         dummy_m = np.zeros((512, 512), dtype=np.uint8)
         dummy_m[100:200, 100:200] = 1
         dummy_m[250:380, 250:380] = 2

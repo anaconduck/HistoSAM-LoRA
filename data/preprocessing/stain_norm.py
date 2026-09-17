@@ -1,24 +1,13 @@
-"""Macenko stain normalization (Macenko et al., ISBI 2009)."""
-
 import numpy as np
 
 
 class MacenkoNormalizer:
-    def __init__(
-        self,
-        Io: float = 240.0,
-        alpha: float = 1.0,
-        beta: float = 0.15
-    ):
+    def __init__(self, Io: float = 240.0, alpha: float = 1.0, beta: float = 0.15):
         self.Io = Io
         self.alpha = alpha
         self.beta = beta
 
-        self.HERef = np.array([
-            [0.5626, 0.2159],
-            [0.7201, 0.8012],
-            [0.4062, 0.5581]
-        ])
+        self.HERef = np.array([[0.5626, 0.2159], [0.7201, 0.8012], [0.4062, 0.5581]])
         self.maxCRef = np.array([1.9705, 1.0308])
 
     def fit(self, target_img_rgb: np.ndarray):
@@ -81,4 +70,3 @@ class MacenkoNormalizer:
         normalized_img = np.clip(normalized_img, 0, 255).astype(np.uint8)
 
         return normalized_img
-

@@ -1,13 +1,3 @@
-"""Dataset and DataLoader Module for Histopathology.
-
-Enforces Project Constraints:
-- Rule 1: Zero-Augmentation Invariance (NO spatial/color augmentations during fine-tuning).
-- Rule 3: Patient-Level Anti-Leakage (all tiles from a patient stay strictly in train OR val).
-- Standard MedSAM normalization or [0, 1] scaling.
-- Magnification-aware filtering (e.g., focus on standard 20x objective).
-- Support for Public Pretraining Datasets and Self-Training Pseudo-Labels.
-"""
-
 import json
 import os
 import re
@@ -22,15 +12,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 
 
 def parse_magnification(filename: str) -> Optional[str]:
-    """Extracts standardized objective magnification from filename.
 
-    Supports:
-    - 'Hepar-HFDA01X20-1.tif' -> '20'
-    - 'HeparND4200x.tif' (200x total = 20x objective) -> '20'
-    - 'Hepar-HFDA01X40-1.tif' -> '40'
-    - 'Hepar-HFDA103X10-2.tif' -> '10'
-    - 'Hepar-HFDA103X4-1.tif' -> '4'
-    """
     stem = Path(filename).stem.lower()
     m = re.search(r"(?:x(4|10|20|40)|(4|10|20|40|100|200|400)x)", stem)
     if not m:
@@ -46,18 +28,13 @@ def parse_magnification(filename: str) -> Optional[str]:
 
 
 def extract_patient_id(filename: str) -> str:
-    """Extracts base patient/subject ID from filename.
 
-    Example: 'Hepar-HFDA01X20-1.tif' -> 'Hepar-HFDA01'
-             'HeparNDA25.1200x1.tif' -> 'HeparNDA25.1'
-    """
     stem = Path(filename).stem
-    # Remove coordinate suffix if tiled
+
     tile_match = re.match(r"^(.*?)(?:_x\d+_y\d+)?$", stem)
     if tile_match and tile_match.group(1):
         stem = tile_match.group(1)
 
-    # Remove trailing replication or sub-image index like -1, -2, 1a, 1b
     pat_match = re.split(r"(?:X\d+|x\d+|-\d+|_\d+)", stem, flags=re.IGNORECASE)
     if pat_match and pat_match[0]:
         return pat_match[0]
@@ -65,26 +42,28 @@ def extract_patient_id(filename: str) -> str:
 
 
 class HistopathologyDataset(Dataset):
-    """PyTorch Dataset for Histopathology Patches and Semantic Masks."""
 
     def __init__(
         self,
         image_paths: List[Path | str],
         mask_paths: Optional[List[Path | str]] = None,
         img_size: int = 512,
-        normalize_type: str = "medsam",  # 'medsam' or 'minmax'
+        normalize_type: str = "medsam",
         ignore_index: int = 255,
         magnification_filter: Optional[str] = None,
     ):
         raw_paths = [Path(p) for p in image_paths]
         if magnification_filter is not None:
             mag_str = str(magnification_filter).lower().replace("x", "")
-            self.image_paths = [p for p in raw_paths if parse_magnification(p.name) == mag_str]
-            print(f"[INFO] Magnification filter '{mag_str}x' active: {len(self.image_paths)}/{len(raw_paths)} images retained.")
+            self.image_paths = [
+                p for p in raw_paths if parse_magnification(p.name) == mag_str
+            ]
+            print(
+                f"[INFO] Magnification filter '{mag_str}x' active: {len(self.image_paths)}/{len(raw_paths)} images retained."
+            )
         else:
             self.image_paths = raw_paths
 
-        # Pair masks if provided
         if mask_paths is not None:
             mask_dict = {Path(m).stem: Path(m) for m in mask_paths}
             self.mask_paths = [mask_dict.get(p.stem) for p in self.image_paths]
@@ -95,7 +74,6 @@ class HistopathologyDataset(Dataset):
         self.normalize_type = normalize_type
         self.ignore_index = ignore_index
 
-        # MedSAM standard normalization parameters
         self.pixel_mean = np.array([123.675, 116.28, 103.53], dtype=np.float32)
         self.pixel_std = np.array([58.395, 57.12, 57.375], dtype=np.float32)
 
@@ -106,7 +84,6 @@ class HistopathologyDataset(Dataset):
         img_path = self.image_paths[idx]
         pil_img = Image.open(str(img_path)).convert("RGB")
 
-        # Zero-Augmentation Invariance: deterministic scaling only
         if pil_img.size != (self.img_size, self.img_size):
             pil_img = pil_img.resize((self.img_size, self.img_size), Image.BILINEAR)
 
@@ -130,7 +107,9 @@ class HistopathologyDataset(Dataset):
             mask_path = self.mask_paths[idx]
             pil_mask = Image.open(str(mask_path))
             if pil_mask.size != (self.img_size, self.img_size):
-                pil_mask = pil_mask.resize((self.img_size, self.img_size), Image.NEAREST)
+                pil_mask = pil_mask.resize(
+                    (self.img_size, self.img_size), Image.NEAREST
+                )
 
             mask = np.array(pil_mask, dtype=np.int64)
             item["mask"] = torch.from_numpy(mask)
@@ -139,7 +118,6 @@ class HistopathologyDataset(Dataset):
 
 
 class PublicLiverDataset(Dataset):
-    """Dataset for pre-training on public liver histology datasets (HEPASS & KMC)."""
 
     def __init__(
         self,
@@ -161,7 +139,11 @@ class PublicLiverDataset(Dataset):
             if not img_dir.exists():
                 continue
 
-            for img_p in sorted(list(img_dir.glob("*.png")) + list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.tif"))):
+            for img_p in sorted(
+                list(img_dir.glob("*.png"))
+                + list(img_dir.glob("*.jpg"))
+                + list(img_dir.glob("*.tif"))
+            ):
                 mask_p = mask_dir / f"{img_p.stem}.png"
                 if mask_p.exists():
                     self.samples.append((img_p, mask_p))
@@ -199,7 +181,6 @@ class PublicLiverDataset(Dataset):
 
 
 class PseudoLabeledDataset(Dataset):
-    """Dataset for self-training using generated pseudo-labels and confidence weights."""
 
     def __init__(
         self,
@@ -216,7 +197,6 @@ class PseudoLabeledDataset(Dataset):
         self.pixel_mean = np.array([123.675, 116.28, 103.53], dtype=np.float32)
         self.pixel_std = np.array([58.395, 57.12, 57.375], dtype=np.float32)
 
-        # Filter only samples with existing pseudo labels
         self.valid_samples = []
         for p in self.image_paths:
             mask_p = self.pseudo_dir / f"{p.stem}_pseudolabel.png"
@@ -224,7 +204,9 @@ class PseudoLabeledDataset(Dataset):
             if mask_p.exists() and conf_p.exists():
                 self.valid_samples.append((p, mask_p, conf_p))
 
-        print(f"[INFO] PseudoLabeledDataset: {len(self.valid_samples)}/{len(self.image_paths)} pairs ready.")
+        print(
+            f"[INFO] PseudoLabeledDataset: {len(self.valid_samples)}/{len(self.image_paths)} pairs ready."
+        )
 
     def __len__(self) -> int:
         return len(self.valid_samples)
@@ -244,16 +226,14 @@ class PseudoLabeledDataset(Dataset):
 
         tensor_img = torch.from_numpy(norm_rgb).permute(2, 0, 1).float()
 
-        # Load pseudo mask
         pil_mask = Image.open(str(mask_p))
         if pil_mask.size != (self.img_size, self.img_size):
             pil_mask = pil_mask.resize((self.img_size, self.img_size), Image.NEAREST)
         tensor_mask = torch.from_numpy(np.array(pil_mask, dtype=np.int64))
 
-        # Load confidence map
         conf_map = np.load(str(conf_p))
         if conf_map.shape != (self.img_size, self.img_size):
-            # Bilinear resize confidence map
+
             conf_img = Image.fromarray((conf_map * 255).astype(np.uint8))
             conf_img = conf_img.resize((self.img_size, self.img_size), Image.BILINEAR)
             conf_map = np.array(conf_img, dtype=np.float32) / 255.0
@@ -276,13 +256,17 @@ def create_patient_stratified_splits(
     n_repeats: int = 3,
     seed: int = 42,
 ) -> List[Dict[str, List[str]]]:
-    """Generates Repeated Patient-Level Stratified K-Fold splits without data leakage."""
+
     img_dir = Path(image_dir)
     lbl_dir = Path(mask_dir)
     out_dir = Path(output_splits_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    image_files = sorted(list(img_dir.glob("*.png")) + list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.tif")))
+    image_files = sorted(
+        list(img_dir.glob("*.png"))
+        + list(img_dir.glob("*.jpg"))
+        + list(img_dir.glob("*.tif"))
+    )
     valid_pairs = []
 
     for img_path in image_files:
@@ -314,9 +298,13 @@ def create_patient_stratified_splits(
 
     for rep in range(n_repeats):
         current_seed = seed + rep * 100
-        sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=current_seed)
+        sgkf = StratifiedGroupKFold(
+            n_splits=n_splits, shuffle=True, random_state=current_seed
+        )
 
-        for fold, (train_idx, val_idx) in enumerate(sgkf.split(patch_names, classes, groups=patients)):
+        for fold, (train_idx, val_idx) in enumerate(
+            sgkf.split(patch_names, classes, groups=patients)
+        ):
             train_patches = patch_names[train_idx].tolist()
             val_patches = patch_names[val_idx].tolist()
 
@@ -351,7 +339,7 @@ def build_dataloaders_from_split(
     num_workers: int = 0,
     img_size: int = 512,
 ) -> Tuple[DataLoader, DataLoader]:
-    """Creates train and validation DataLoaders directly from a saved split JSON."""
+
     with open(split_file, "r") as f:
         split = json.load(f)
 
@@ -386,4 +374,3 @@ def build_dataloaders_from_split(
     )
 
     return train_loader, val_loader
-

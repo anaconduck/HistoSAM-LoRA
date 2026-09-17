@@ -1,13 +1,3 @@
-"""Inference Script for Liver Histopathology Segmentation.
-
-Executes final semantic segmentation on target histopathology images:
-1. Generates pixel-wise predictions (0: Normal, 1: Steatosis, 2: Necrosis).
-2. Saves classification masks (.npy) in results/predictions/.
-3. Generates high-resolution diagnostic composite overlays (.png) in results/visualizations/
-   specifically formatted for independent clinical review by pathologists.
-4. Produces summary_report.json detailing tissue quantification across all samples.
-"""
-
 import argparse
 import json
 import os
@@ -46,20 +36,31 @@ def run_inference(
     pred_dir.mkdir(parents=True, exist_ok=True)
     vis_dir.mkdir(parents=True, exist_ok=True)
 
-    image_files = sorted(list(raw_dir.glob("*.tif")) + list(raw_dir.glob("*.tiff")) + list(raw_dir.glob("*.png")))
+    image_files = sorted(
+        list(raw_dir.glob("*.tif"))
+        + list(raw_dir.glob("*.tiff"))
+        + list(raw_dir.glob("*.png"))
+    )
     if not image_files:
         print(f"[ERROR] No images found in {raw_dir}")
         return
 
-    mag_filter = None if (magnification is None or magnification.lower() == "all") else magnification
-    dataset = HistopathologyDataset(image_files, img_size=img_size, magnification_filter=mag_filter)
+    mag_filter = (
+        None
+        if (magnification is None or magnification.lower() == "all")
+        else magnification
+    )
+    dataset = HistopathologyDataset(
+        image_files, img_size=img_size, magnification_filter=mag_filter
+    )
 
-    print(f"[INFO] Running Inference on {len(dataset)} images (Magnification: {mag_filter or 'All'})...")
+    print(
+        f"[INFO] Running Inference on {len(dataset)} images (Magnification: {mag_filter or 'All'})..."
+    )
     print(f"  - Device: {dev}")
     print(f"  - Masks destination: {pred_dir}")
     print(f"  - Visualizations destination: {vis_dir}")
 
-    # Build model
     model = build_histo_sam_lora(num_classes=3, lora_rank=16, decoder_type="carafe")
     if checkpoint_path and Path(checkpoint_path).exists():
         print(f"[INFO] Loading model checkpoint from: {checkpoint_path}")
@@ -67,7 +68,9 @@ def run_inference(
         state = ckpt.get("model_state_dict", ckpt)
         model.load_state_dict(state, strict=False)
     else:
-        print(f"[WARN] Checkpoint '{checkpoint_path}' not found. Using initialized weights.")
+        print(
+            f"[WARN] Checkpoint '{checkpoint_path}' not found. Using initialized weights."
+        )
 
     model.eval()
     model.to(dev)
@@ -81,7 +84,6 @@ def run_inference(
         stem = Path(img_name).stem
         orig_img_path = raw_dir / img_name
 
-        # Tensor shape (1, 3, H, W)
         tensor_in = item["image"].unsqueeze(0).to(dev)
 
         logits = model(tensor_in)
@@ -91,11 +93,9 @@ def run_inference(
         pred_mask = preds.squeeze(0).cpu().numpy().astype(np.uint8)
         conf_map = conf.squeeze(0).cpu().numpy().astype(np.float32)
 
-        # 1. Save prediction numpy array
         mask_save_file = pred_dir / f"{stem}_mask.npy"
         np.save(str(mask_save_file), pred_mask)
 
-        # 2. Save clinical visualization composite PNG
         vis_save_file = vis_dir / f"{stem}_clinical_overlay.png"
         generate_clinical_composite(
             image_path=orig_img_path,
@@ -104,7 +104,6 @@ def run_inference(
             panel_size=img_size,
         )
 
-        # 3. Calculate statistics
         total_px = pred_mask.size
         pct_normal = float((pred_mask == 0).sum() / total_px) * 100.0
         pct_steatosis = float((pred_mask == 1).sum() / total_px) * 100.0
@@ -125,9 +124,10 @@ def run_inference(
         report_records.append(record)
 
         if (i + 1) % 10 == 0 or (i + 1) == total_imgs:
-            print(f"[{i+1}/{total_imgs}] Processed {img_name} -> Steatosis: {pct_steatosis:.1f}%, Necrosis: {pct_necrosis:.1f}%")
+            print(
+                f"[{i+1}/{total_imgs}] Processed {img_name} -> Steatosis: {pct_steatosis:.1f}%, Necrosis: {pct_necrosis:.1f}%"
+            )
 
-    # Save summary report
     summary_path = pred_dir.parent / "inference_summary_report.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -147,12 +147,31 @@ def run_inference(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Histopathology Semantic Segmentation Inference")
-    parser.add_argument("--checkpoint", type=str, default="results/checkpoints/selftrain_best.pth", help="Path to checkpoint")
-    parser.add_argument("--raw-dir", type=str, default="data/liver_primary/raw_images", help="Raw images directory")
-    parser.add_argument("--magnification", type=str, default="20", help="Filter magnification ('20', 'all')")
+    parser = argparse.ArgumentParser(
+        description="Histopathology Semantic Segmentation Inference"
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="results/checkpoints/selftrain_best.pth",
+        help="Path to checkpoint",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        type=str,
+        default="data/liver_primary/raw_images",
+        help="Raw images directory",
+    )
+    parser.add_argument(
+        "--magnification",
+        type=str,
+        default="20",
+        help="Filter magnification ('20', 'all')",
+    )
     parser.add_argument("--img-size", type=int, default=512, help="Patch size")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     args = parser.parse_args()
 
     run_inference(
